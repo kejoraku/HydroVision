@@ -26,8 +26,14 @@ DATA_GEOGRAFICA = {
     }
 }
 
+# Inicializar estados de memoria de Streamlit para que no se borren las fechas al hacer clic
+if "fechas_disponibles" not in st.session_state:
+    st.session_state.fechas_disponibles = []
+if "localidad_actual" not in st.session_state:
+    st.session_state.localidad_actual = ""
+
 # =========================================================================
-# 2. DISEÑO DE LA INTERFAZ DE USUARIO (SIDEBAR AUTOMÁTICO OPTIMIZADO)
+# 2. DISEÑO DE LA INTERFAZ DE USUARIO (SIDEBAR SECUENCIAL BLINDADO)
 # =========================================================================
 st.sidebar.title("💧 HydroVision Pro")
 st.sidebar.markdown("### Selección de Imagen Real del Catálogo")
@@ -37,57 +43,62 @@ pais_usuario = st.sidebar.selectbox("1. Selecciona el País:", options=list(DATA
 provincia_usuario = st.sidebar.selectbox("2. Selecciona la Provincia/Estado:", options=list(DATA_GEOGRAFICA[pais_usuario].keys()), index=0)
 partido_usuario = st.sidebar.selectbox("3. Selecciona el Partido/Ciudad:", options=DATA_GEOGRAFICA[pais_usuario][provincia_usuario], index=0)
 
-# --- CONFIGURACIÓN DE GEOMETRÍA FIJA ---
-paises_db = ee.FeatureCollection("USDOS/LSIB_SIMPLE/2017")
-roi_pais = paises_db.filter(ee.Filter.eq('country_na', 'Argentina'))
+# Si el usuario cambia de partido, limpiamos la memoria para forzar una nueva búsqueda
+id_localidad = f"{pais_usuario}_{provincia_usuario}_{partido_usuario}"
+if id_localidad != st.session_state.localidad_actual:
+    st.session_state.fechas_disponibles = []
+    st.session_state.localidad_actual = id_localidad
 
-partidos_db = ee.FeatureCollection("FAO/GAUL/2015/level2")
-roi_final = partidos_db.filterBounds(roi_pais).filter(ee.Filter.stringContains('adm2_name', partido_usuario))
+st.sidebar.write("---")
 
-if roi_final.size().getInfo() == 0:
-    roi_final = roi_pais
+# PASO A: Botón exclusivo para activar la lectura de metadatos en Earth Engine de forma voluntaria
+btn_conectar_catalogo = st.sidebar.button("🔍 1. Buscar Fechas en Catálogo", use_container_width=True)
 
-# --- EXTRACTOR AUTOMÁTICO DE FECHAS EN SEGUNDO PLANO ---
-# Usamos un decorador fragmentado para que cargue solo y no congele el resto de los componentes visuales
-@st.fragment
-def renderizar_selector_fechas(roi_geometria):
-    coleccion_fechas = ee.ImageCollection('COPERNICUS/S2_SR_HARMONIZED') \
-        .filterBounds(roi_geometria) \
-        .filterDate('2022-01-01', '2026-12-31') \
-        .filter(ee.Filter.lt('CLOUDY_PIXEL_PERCENTAGE', 25))
+if btn_conectar_catalogo:
+    with st.sidebar.spinner("Buscando órbitas en los servidores de Google..."):
+        paises_db = ee.FeatureCollection("USDOS/LSIB_SIMPLE/2017")
+        roi_pais = paises_db.filter(ee.Filter.eq('country_na', 'Argentina'))
 
-    lista_fechas_reales = coleccion_fechas.aggregate_array('system:index') \
-        .map(lambda idx: ee.String(idx).slice(0, 8)) \
-        .map(lambda s: ee.Date.parse('YYYYMMdd', s).format('YYYY-MM-DD')) \
-        .distinct().sort().getInfo()
+        partidos_db = ee.FeatureCollection("FAO/GAUL/2015/level2")
+        roi_final = partidos_db.filterBounds(roi_pais).filter(ee.Filter.stringContains('adm2_name', partido_usuario))
 
-    if lista_fechas_reales:
-        fecha_sel_str = st.selectbox(
-            "4. Selecciona la Fecha Exacta de la Imagen del Catálogo:",
-            options=lista_fechas_reales,
-            index=len(lista_fechas_reales) - 1
-        )
-        return fecha_sel_str
-    else:
-        st.warning("⚠️ No se encontraron imágenes en el catálogo para esta región.")
-        return None
+        if roi_final.size().getInfo() == 0:
+            roi_final = roi_pais
 
-fecha_seleccionada_str = renderizar_selector_fechas(roi_final)
+        # Limitamos la búsqueda para agilizar la respuesta instantánea del servidor
+        coleccion_fechas = ee.ImageCollection('COPERNICUS/S2_SR_HARMONIZED') \
+            .filterBounds(roi_final) \
+            .filterDate('2023-01-01', '2024-12-31') \
+            .filter(ee.Filter.lt('CLOUDY_PIXEL_PERCENTAGE', 25))
 
-if fecha_seleccionada_str:
-    ejecutar_analisis = st.sidebar.button("Calcular y Mostrar Mapas", type="primary")
+        # Extracción limpia de strings de fecha sin procesar pixeles
+        st.session_state.fechas_disponibles = coleccion_fechas.aggregate_array('system:index') \
+            .map(lambda idx: ee.String(idx).slice(0, 8)) \
+            .map(lambda s: ee.Date.parse('YYYYMMdd', s).format('YYYY-MM-DD')) \
+            .distinct().sort().getInfo()
+
+# PASO B: El menú desplegable de fechas y el botón de cálculo aparecen SOLO si ya se cargó la lista en memoria
+if st.session_state.fechas_disponibles:
+    fecha_seleccionada_str = st.sidebar.selectbox(
+        "4. Selecciona la Fecha Exacta de la Imagen:",
+        options=st.session_state.fechas_disponibles,
+        index=len(st.session_state.fechas_disponibles) - 1
+    )
+    st.sidebar.write("---")
+    ejecutar_analisis = st.sidebar.button("🚀 2. Calcular y Mostrar Mapas", type="primary", use_container_width=True)
 else:
+    st.sidebar.info("💡 Haz clic arriba en 'Buscar Fechas en Catálogo' para desplegar los días disponibles del satélite.")
     ejecutar_analisis = False
 
 # =========================================================================
-# 3. LÓGICA DE PROCESAMIENTO ESPACIAL (CRITERIOS HIDROLÓGICOS ESTRICTOS)
+# 3. LÓGICA DE PROCESAMIENTO ESPACIAL Y RENDERIZADO DEL MAPA
 # =========================================================================
 
 mapa_placeholder = st.empty()
 M = geemap.Map(center=[-34.9214, -57.9545], zoom=10)
 M.add_basemap("HYBRID")
 
-if ejecutar_analisis and fecha_seleccionada_str:
+if ejecutar_analisis and st.session_state.fechas_disponibles:
     with st.spinner("Procesando evento hídrico e índices estadísticos anuales..."):
         
         fecha_obj = datetime.datetime.strptime(fecha_seleccionada_str, '%Y-%m-%d')
@@ -99,6 +110,14 @@ if ejecutar_analisis and fecha_seleccionada_str:
         fecha_inicio_evt = (fecha_obj - datetime.timedelta(days=1)).strftime('%Y-%m-%d')
         fecha_fin_evt = (fecha_obj + datetime.timedelta(days=1)).strftime('%Y-%m-%d')
         
+        paises_db = ee.FeatureCollection("USDOS/LSIB_SIMPLE/2017")
+        roi_pais = paises_db.filter(ee.Filter.eq('country_na', 'Argentina'))
+        partidos_db = ee.FeatureCollection("FAO/GAUL/2015/level2")
+        roi_final = partidos_db.filterBounds(roi_pais).filter(ee.Filter.stringContains('adm2_name', partido_usuario))
+        
+        if roi_final.size().getInfo() == 0:
+            roi_final = roi_pais
+
         def calcular_ndwi(img):
             qa = img.select('QA60')
             mask = qa.bitwiseAnd(1 << 10).eq(0).And(qa.bitwiseAnd(1 << 11).eq(0))
@@ -123,7 +142,7 @@ if ejecutar_analisis and fecha_seleccionada_str:
                          
         agua_en_fecha = imagen_fecha.gt(0)
 
-        # C) CLASIFICACIÓN DE LAS CAPAS SOLICITADAS EN BASE AL PROMEDIO ANUAL
+        # C) CLASIFICACIÓN DE LAS 3 CAPAS SOLICITADAS
         capa_permanente_fecha = agua_en_fecha.And(agua_permanente_anual)
         
         frecuencia_temporal = frecuencia_anual.gte(0.20).And(frecuencia_anual.lte(0.55))
@@ -133,10 +152,10 @@ if ejecutar_analisis and fecha_seleccionada_str:
         M.center_object(roi_final, zoom=10)
         
         recorte_perm_anual = agua_permanente_anual.updateMask(agua_permanente_anual).clip(roi_final)
-        recorte_perm_fecha = recorte_perm_fecha = capa_permanente_fecha.updateMask(capa_permanente_fecha).clip(roi_final)
+        recorte_perm_fecha = capa_permanente_fecha.updateMask(capa_permanente_fecha).clip(roi_final)
         recorte_temp_fecha = capa_temporaria_fecha.updateMask(capa_temporaria_fecha).clip(roi_final)
 
-        # Dibujar las 3 capas solicitadas en el mapa
+        # Inyectar capas hidrológicas al mapa
         M.addLayer(recorte_perm_anual, {'palette': ['#00008B']}, '1. Cuerpos de Agua Permanentes (Promedio Anual de Fondo >80%)')
         M.addLayer(recorte_perm_fecha, {'palette': ['#0000FF']}, '2. Cuerpos de Agua Permanentes (En la Fecha Seleccionada)')
         M.addLayer(recorte_temp_fecha, {'palette': ['#00BFFF']}, '3. Cuerpos de Agua Temporarios (En la Fecha Seleccionada)')
