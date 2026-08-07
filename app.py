@@ -30,7 +30,7 @@ DATA_GEOGRAFICA = {
 # 2. DISEÑO DE LA INTERFAZ DE USUARIO (SIDEBAR REACTIVO)
 # =========================================================================
 st.sidebar.title("💧 HydroVision Pro")
-st.sidebar.markdown("### Clasificación de Cuerpos de Agua en Fecha Específica vs Fondo Anual")
+st.sidebar.markdown("### Selección de Imagen Real del Catálogo")
 st.sidebar.write("---")
 
 pais_usuario = st.sidebar.selectbox("1. Selecciona el País:", options=list(DATA_GEOGRAFICA.keys()), index=0)
@@ -48,33 +48,33 @@ if roi_final.size().getInfo() == 0:
     roi_final = roi_pais
 
 # --- EXTRACTOR DE FECHAS REALES DEL CATÁLOGO DE GOOGLE ---
-# Buscamos de forma rápida las órbitas reales limpias del satélite sobre ese partido específico
-with st.sidebar.spinner("Leyendo catálogo de órbitas reales de Google..."):
-    coleccion_fechas = ee.ImageCollection('COPERNICUS/S2_SR_HARMONIZED') \
-        .filterBounds(roi_final) \
-        .filterDate('2023-01-01', '2023-12-31') \
-        .filter(ee.Filter.lt('CLOUDY_PIXEL_PERCENTAGE', 25))
+# Realiza la consulta masiva sobre el catálogo real de Google tal como solicitaste originalmente
+coleccion_fechas = ee.ImageCollection('COPERNICUS/S2_SR_HARMONIZED') \
+    .filterBounds(roi_final) \
+    .filterDate('2021-01-01', '2026-12-31') \
+    .filter(ee.Filter.lt('CLOUDY_PIXEL_PERCENTAGE', 30))
 
-    lista_fechas_reales = coleccion_fechas.map(lambda img: ee.Feature(None, {'f': img.date().format('YYYY-MM-DD')})) \
-                                           .aggregate_array('f').distinct().sort().getInfo()
+# Extraer el string de la fecha limpia directamente desde el metadato nativo de la imagen
+lista_fechas_reales = coleccion_fechas.map(lambda img: ee.Feature(None, {'f': img.date().format('YYYY-MM-DD')})) \
+                                       .aggregate_array('f').distinct().sort().getInfo()
 
 # EL MENÚ DESPLEGABLE CON LAS FECHAS REALES DE LA IMAGEN SOLICITADO
 if lista_fechas_reales:
     fecha_seleccionada_str = st.sidebar.selectbox(
         "4. Selecciona la Fecha Exacta de la Imagen del Catálogo:",
         options=lista_fechas_reales,
-        index=len(lista_fechas_reales) // 2 # Apunta a mitad de año por defecto
+        index=len(lista_fechas_reales) - 1 # Apunta a la última órbita real disponible
     )
     ejecutar_analisis = st.sidebar.button("Calcular y Mostrar Mapas", type="primary")
 else:
-    st.sidebar.warning("⚠️ No se encontraron órbitas despejadas en el catálogo.")
+    st.sidebar.warning("⚠️ No se encontraron imágenes en el catálogo para esta región.")
     ejecutar_analisis = False
 
 # =========================================================================
 # 3. LÓGICA DE PROCESAMIENTO ESPACIAL (CRITERIOS HIDROLÓGICOS ESTRICTOS)
 # =========================================================================
 
-# Forzar la creación visual del contenedor del mapa inmediatamente en la pantalla derecha
+# El contenedor del mapa se inicializa abajo para asegurar que no se quede la pantalla gris
 mapa_placeholder = st.empty()
 M = geemap.Map(center=[-34.9214, -57.9545], zoom=10)
 M.add_basemap("HYBRID")
@@ -82,7 +82,7 @@ M.add_basemap("HYBRID")
 if ejecutar_analisis and lista_fechas_reales:
     with st.spinner("Procesando evento hídrico e índices estadísticos anuales..."):
         
-        # El año se extrae de forma automática de la fecha que el usuario seleccionó en el desplegable
+        # El año se extrae de forma automática del string exacto seleccionado sin procesamientos estáticos intermedios
         fecha_obj = datetime.datetime.strptime(fecha_seleccionada_str, '%Y-%m-%d')
         anio_automatico = fecha_obj.year
         
@@ -126,16 +126,16 @@ if ejecutar_analisis and lista_fechas_reales:
         M.center_object(roi_final, zoom=10)
         
         recorte_perm_anual = agua_permanente_anual.updateMask(agua_permanente_anual).clip(roi_final)
-        recorte_perm_fecha = capa_permanente_fecha.updateMask(capa_permanente_fecha).clip(roi_final)
+        recorte_perm_fecha = ... = capa_permanente_fecha.updateMask(capa_permanente_fecha).clip(roi_final)
         recorte_temp_fecha = capa_temporaria_fecha.updateMask(capa_temporaria_fecha).clip(roi_final)
 
-        # Inyectar las 3 capas solicitadas en el objeto del mapa
+        # Dibujar las 3 capas solicitadas en el objeto del mapa
         M.addLayer(recorte_perm_anual, {'palette': ['#00008B']}, '1. Cuerpos de Agua Permanentes (Promedio Anual de Fondo >80%)')
         M.addLayer(recorte_perm_fecha, {'palette': ['#0000FF']}, '2. Cuerpos de Agua Permanentes (En la Fecha Seleccionada)')
         M.addLayer(recorte_temp_fecha, {'palette': ['#00BFFF']}, '3. Cuerpos de Agua Temporarios (En la Fecha Seleccionada)')
         
         st.success(f"📊 ¡Mapas hídricos generados con éxito para el {fecha_seleccionada_str}! Año analizado automáticamente: {anio_automatico}")
 
-# Dibujar el mapa interactivo final de forma obligatoria en la pantalla derecha
+# Dibujar el mapa interactivo final en la pantalla derecha
 with mapa_placeholder:
     M.to_streamlit(height=750)
