@@ -44,36 +44,37 @@ partido_sel = st.sidebar.selectbox("3. Selecciona el Partido/Ciudad:", options=p
 anio_actual = datetime.datetime.now().year
 anio_seleccionado = st.sidebar.number_input("4. Año para Estadística de Fondo:", min_value=2015, max_value=anio_actual, value=2023, step=1)
 
-# --- BLOQUE EXTRACTOR DE FECHAS REALES DESDE EL CATÁLOGO ---
+# --- BLOQUE EXTRACTOR DE FECHAS REALES BLINDADO ---
 fechas_disponibles = []
 
 fecha_inicio_anio = f"{anio_seleccionado}-01-01"
 fecha_fin_anio = f"{anio_seleccionado}-12-31"
 
+# Intentar primero con la base de datos de Partidos (Level 2)
 partidos_db = ee.FeatureCollection("FAO/GAUL/2015/level2")
-
-# CORRECCIÓN CLAVE: Filtro inteligente por aproximación de texto (stringContains) para evitar fallas por nombres compuestos de la FAO
 roi_fechas = partidos_db.filter(ee.Filter.eq('adm0_name', pais_sel)) \
                         .filter(ee.Filter.eq('adm1_name', provincia_sel)) \
                         .filter(ee.Filter.stringContains('adm2_name', partido_sel))
 
-# Si el filtro por aproximación no arroja resultados, usamos el límite provincial para no trabar la interfaz
+# SOLUCIÓN DEFINITIVA: Si el partido da vacío por culpa de la FAO, retrocedemos al límite provincial completo
 if roi_fechas.size().getInfo() == 0:
     roi_fechas = ee.FeatureCollection("FAO/GAUL/2015/level1") \
                     .filter(ee.Filter.eq('adm0_name', pais_sel)) \
                     .filter(ee.Filter.eq('adm1_name', provincia_sel))
 
-# Buscar escenas de Sentinel-2 que toquen la geometría resuelta
+# Buscar escenas de Sentinel-2 garantizadas en la región
 coleccion_fechas = ee.ImageCollection('COPERNICUS/S2_SR_HARMONIZED') \
     .filterBounds(roi_fechas) \
     .filterDate(fecha_inicio_anio, fecha_fin_anio) \
-    .filter(ee.Filter.lt('CLOUDY_PIXEL_PERCENTAGE', 50)) 
+    .filter(ee.Filter.lt('CLOUDY_PIXEL_PERCENTAGE', 40)) 
     
 def extraer_fecha(img):
     return ee.Feature(None, {'fecha': img.date().format('YYYY-MM-DD')})
     
-lista_fechas_ee = coleccion_fechas.map(extraer_fecha).aggregate_array('fecha').distinct().sort()
-fechas_disponibles = lista_fechas_ee.getInfo()
+# Si hay imágenes, las procesamos de forma limpia
+if coleccion_fechas.size().getInfo() > 0:
+    lista_fechas_ee = coleccion_fechas.map(extraer_fecha).aggregate_array('fecha').distinct().sort()
+    fechas_disponibles = lista_fechas_ee.getInfo()
 
 # Mostrar el selector de fechas dinámico alimentado directamente por GEE
 if fechas_disponibles:
@@ -84,7 +85,7 @@ if fechas_disponibles:
     )
     ejecutar_analisis = st.sidebar.button("Calcular y Mostrar Mapas", type="primary")
 else:
-    st.sidebar.warning("⚠️ No se detectaron órbitas de Sentinel-2 despejadas para este año en este partido.")
+    st.sidebar.warning("⚠️ No se detectaron órbitas de Sentinel-2 despejadas para este año. Intenta cambiando el año del punto 4.")
     ejecutar_analisis = False
 
 # =========================================================================
@@ -101,7 +102,7 @@ if ejecutar_analisis and fechas_disponibles:
         fecha_inicio_evento = (fecha_obj - datetime.timedelta(days=2)).strftime('%Y-%m-%d')
         fecha_fin_evento = (fecha_obj + datetime.timedelta(days=2)).strftime('%Y-%m-%d')
         
-        # Aplicamos la misma lógica de tolerancia de texto para la ROI de procesamiento
+        # Geometría de procesamiento blindada
         roi = partidos_db.filter(ee.Filter.eq('adm0_name', pais_sel)) \
                          .filter(ee.Filter.eq('adm1_name', provincia_sel)) \
                          .filter(ee.Filter.stringContains('adm2_name', partido_sel))
@@ -119,7 +120,7 @@ if ejecutar_analisis and fechas_disponibles:
             ndwi = img.normalizedDifference(['B3', 'B8']).rename('NDWI')
             return img.addBands(ndwi).updateMask(mask)
             
-        coleccion_anual = coleccion_base.filterDate(fecha_inicio_anio, fecha_fin_anio).filter(ee.Filter.lt('CLOUDY_PIXEL_PERCENTAGE', 50))
+        coleccion_anual = coleccion_base.filterDate(fecha_inicio_anio, fecha_fin_anio).filter(ee.Filter.lt('CLOUDY_PIXEL_PERCENTAGE', 40))
         ndwi_anual = coleccion_anual.map(calcular_ndwi).select('NDWI')
         frecuencia_anual = ndwi_anual.map(lambda img: img.gt(0)).mean()
         
@@ -131,7 +132,7 @@ if ejecutar_analisis and fechas_disponibles:
         
         zona_inundada = agua_en_fecha.where(frecuencia_anual.gte(0.55), 0)
         
-        M.center_object(roi, zoom=11)
+        M.center_object(roi, zoom=10)
         capa_permanente = agua_permanente.updateMask(agua_permanente).clip(roi)
         capa_temporaria = agua_temporaria.updateMask(agua_temporaria).clip(roi)
         capa_inundacion = zona_inundada.updateMask(zona_inundada).clip(roi)
@@ -140,7 +141,7 @@ if ejecutar_analisis and fechas_disponibles:
         M.addLayer(capa_temporaria, {'palette': ['#00BFFF']}, 'Cuerpos de Agua Temporarios Anuales (20%-55%)')
         M.addLayer(capa_inundacion, {'palette': ['#FF0000']}, 'Crecidas Excesivas / Inundación en la Fecha Elegida')
         
-        st.success(f"📊 ¡Análisis hidrológico completado para {partido_sel} usando la escena real del {fecha_seleccionada_str}!")
+        st.success(f"📊 ¡Análisis hidrológico completado usando la escena del {fecha_seleccionada_str}!")
 
-# Dibujar el mapa actualizado al final
+# Dibujar el mapa
 M.to_streamlit(height=750)
