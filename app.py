@@ -1,6 +1,8 @@
 import streamlit as st
 import ee
-import geemap
+import folium
+from streamlit_folium import st_folium
+import datetime
 
 # =========================================================================
 # 1. CONFIGURACIÓN DE LA PÁGINA E INICIALIZACIÓN DE EARTH ENGINE
@@ -25,14 +27,13 @@ DATA_GEOGRAFICA = {
     }
 }
 
-# Inicializar estados de memoria de Streamlit para no perder los datos entre clics
 if "diccionario_fechas" not in st.session_state:
     st.session_state.diccionario_fechas = {}
 if "localidad_actual" not in st.session_state:
     st.session_state.localidad_actual = ""
 
 # =========================================================================
-# 2. DISEÑO DE LA INTERFAZ DE USUARIO (SIDEBAR SECUENCIAL BLINDADO)
+# 2. DISEÑO DE LA INTERFAZ DE USUARIO (SIDEBAR SECUENCIAL)
 # =========================================================================
 st.sidebar.title("💧 HydroVision Pro")
 st.sidebar.markdown("### Selección de Imagen Real del Catálogo")
@@ -40,7 +41,7 @@ st.sidebar.write("---")
 
 pais_usuario = st.sidebar.selectbox("1. Selecciona el País:", options=list(DATA_GEOGRAFICA.keys()), index=0)
 provincia_usuario = st.sidebar.selectbox("2. Selecciona la Provincia/Estado:", options=list(DATA_GEOGRAFICA[pais_usuario].keys()), index=0)
-partido_usuario = st.sidebar.selectbox("3. Selecciona el Partido/Ciudad:", options=DATA_GEOGRAFICA[pais_usuario][provincia_usuario], index=0)
+partido_usuario = st.sidebar.selectbox("3. Selecciona el Partido/Ciudad:", options=DATA_GEOGRAFICA[pais_usuario][provincia_usuario], index=3) # Apunta a Trenque Lauquen por defecto
 
 id_localidad = f"{pais_usuario}_{provincia_usuario}_{partido_usuario}"
 if id_localidad != st.session_state.localidad_actual:
@@ -68,19 +69,24 @@ if btn_conectar_catalogo:
             .filterDate('2023-01-01', '2025-12-31') \
             .filter(ee.Filter.lt('CLOUDY_PIXEL_PERCENTAGE', 25))
 
-        # CORRECCIÓN DE FONDO: Extraemos la estampa de tiempo numérica (milisegundos) y el string formateado de forma segura
+        # Extracción limpia por lista indexada para evitar el bug de las strings rotas de Google
         lista_propiedades = coleccion_fechas.map(lambda img: ee.Feature(None, {
             'texto': img.date().format('YYYY-MM-DD'),
             'milisegundos': img.get('system:time_start')
         })).reduceColumns(ee.Reducer.toList(2), ['texto', 'milisegundos']).get('list').getInfo()
 
-        # Armamos un diccionario local en Python: "Fecha Visible" -> "Milisegundos de Google"
-        # Esto elimina cualquier error de conversión de texto a futuro
         if lista_propiedades:
-            dicc_temporal = {item[0]: item[1] for item in lista_propiedades if item[0] and item[1]}
+            # Reconstruir un diccionario limpio con la fecha en formato legible y la marca de tiempo original
+            dicc_temporal = {}
+            for item in lista_propiedades:
+                if item and len(item) == 2:
+                    # Si la fecha viene rota (ej: 2025-12-364), la limpiamos para forzar YYYY-MM-DD
+                    fecha_sucia = str(item[0])
+                    if len(fecha_sucia) > 10:
+                        fecha_sucia = fecha_sucia[:10]
+                    dicc_temporal[fecha_sucia] = item[1]
             st.session_state.diccionario_fechas = dict(sorted(dicc_temporal.items()))
 
-# El menú desplegable muestra la fecha limpia, pero guarda los milisegundos numéricos de fondo
 if st.session_state.diccionario_fechas:
     fecha_seleccionada_texto = st.sidebar.selectbox(
         "4. Selecciona la Fecha Exacta de la Imagen:",
@@ -95,23 +101,26 @@ else:
     ejecutar_analisis = False
 
 # =========================================================================
-# 3. LÓGICA DE PROCESAMIENTO ESPACIAL Y RENDERIZADO DEL MAPA
+# 3. LÓGICA DE PROCESAMIENTO ESPACIAL Y RENDERIZADO (FOLIUM SEGURO)
 # =========================================================================
 
-mapa_placeholder = st.empty()
-M = geemap.Map(center=[-34.9214, -57.9545], zoom=10)
-M.add_basemap("HYBRID")
+# Crear objeto de mapa base nativo de Folium con capa satelital híbrida de Google
+mapa_folium = folium.Map(location=[-35.9722, -62.7145], zoom_start=10, control_scale=True)
+folium.TileLayer(
+    tiles='https://google.com{x}&y={y}&z={z}',
+    attr='Google Hybrid',
+    name='Google Satélite Híbrido',
+    overlay=False,
+    control=True
+).add_to(mapa_folium)
 
 if ejecutar_analisis and st.session_state.diccionario_fechas:
     with st.spinner("Procesando evento hídrico e índices estadísticos anuales..."):
         
-        # Reconstruimos los objetos de fecha de Earth Engine usando la marca de tiempo numérica inmune a errores
+        # Reconstruir las variables de tiempo nativas en Earth Engine
         ee_fecha_base = ee.Date(milisegundos_seleccionados)
-        
-        # Extraemos el año de forma automática y directa en el servidor
         anio_automatico = ee_fecha_base.get('year').getInfo()
         
-        # Definimos las ventanas de análisis
         fecha_inicio_anio = f"{anio_automatico}-01-01"
         fecha_fin_anio = f"{anio_automatico}-12-31"
         
@@ -125,6 +134,10 @@ if ejecutar_analisis and st.session_state.diccionario_fechas:
         
         if roi_final.size().getInfo() == 0:
             roi_final = roi_pais
+
+        # Mover dinámicamente el centro del mapa de Folium a las coordenadas reales de la ROI
+        coords_centro = roi_final.geometry().centroid().coordinates().getInfo()
+        mapa_folium.location = [coords_centro[1], coords_centro[0]]
 
         def calcular_ndwi(img):
             qa = img.select('QA60')
@@ -152,24 +165,26 @@ if ejecutar_analisis and st.session_state.diccionario_fechas:
 
         # C) CLASIFICACIÓN DE LAS 3 CAPAS SOLICITADAS
         capa_permanente_fecha = agua_en_fecha.And(agua_permanente_anual)
-        
         frecuencia_temporal = frecuencia_anual.gte(0.20).And(frecuencia_anual.lte(0.55))
         capa_temporaria_fecha = agua_en_fecha.And(frecuencia_temporal)
-
-        # Centrar el mapa y recortar capas al límite del partido
-        M.center_object(roi_final, zoom=10)
         
+        # Enmascarar y recortar capas
         recorte_perm_anual = agua_permanente_anual.updateMask(agua_permanente_anual).clip(roi_final)
         recorte_perm_fecha = capa_permanente_fecha.updateMask(capa_permanente_fecha).clip(roi_final)
         recorte_temp_fecha = capa_temporaria_fecha.updateMask(capa_temporaria_fecha).clip(roi_final)
 
-        # Dibujar las 3 capas solicitadas sobre el mapa
-        M.addLayer(recorte_perm_anual, {'palette': ['#00008B']}, '1. Cuerpos de Agua Permanentes (Promedio Anual de Fondo >80%)')
-        M.addLayer(recorte_perm_fecha, {'palette': ['#0000FF']}, '2. Cuerpos de Agua Permanentes (En la Fecha Seleccionada)')
-        M.addLayer(recorte_temp_fecha, {'palette': ['#00BFFF']}, '3. Cuerpos de Agua Temporarios (En la Fecha Seleccionada)')
+        # Extraer los enlaces de mosaico (Tile URLs) oficiales desde los servidores de Google
+        map_id_anual = ee.data.getMapId({'image': recorte_perm_anual, 'visParams': {'palette': ['#00008B']}})
+        map_id_perm_fecha = ee.data.getMapId({'image': recorte_perm_fecha, 'visParams': {'palette': ['#0000FF']}})
+        map_id_temp_fecha = ee.data.getMapId({'image': recorte_temp_fecha, 'visParams': {'palette': ['#00BFFF']}})
+
+        # Inyectar las capas de Earth Engine directamente sobre el mapa base de Folium
+        folium.TileLayer(tiles=map_id_anual['tile_fetcher'].url_format, attr='GEE', name='1. Cuerpos de Agua Permanentes Anuales (>80%)', overlay=True).add_to(mapa_folium)
+        folium.TileLayer(tiles=map_id_perm_fecha['tile_fetcher'].url_format, attr='GEE', name='2. Cuerpos de Agua Permanentes (En la Fecha)', overlay=True).add_to(mapa_folium)
+        folium.TileLayer(tiles=map_id_temp_fecha['tile_fetcher'].url_format, attr='GEE', name='3. Cuerpos de Agua Temporarios (En la Fecha)', overlay=True).add_to(mapa_folium)
         
         st.success(f"📊 ¡Mapas hídricos generados con éxito para la escena del {fecha_seleccionada_texto}! Año analizado automáticamente: {anio_automatico}")
 
-# Dibujar el mapa interactivo final en la pantalla derecha
-with mapa_placeholder:
-    M.to_streamlit(height=750)
+# Agregar el gestor de capas interactivo arriba a la derecha del mapa
+folium.LayerControl().add_to(mapa_folium)
+
