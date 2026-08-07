@@ -26,7 +26,7 @@ DATA_GEOGRAFICA = {
     }
 }
 
-# Inicializar estados de memoria de Streamlit para que no se borren las fechas al hacer clic
+# Inicializar estados de memoria de Streamlit
 if "fechas_disponibles" not in st.session_state:
     st.session_state.fechas_disponibles = []
 if "localidad_actual" not in st.session_state:
@@ -43,7 +43,6 @@ pais_usuario = st.sidebar.selectbox("1. Selecciona el País:", options=list(DATA
 provincia_usuario = st.sidebar.selectbox("2. Selecciona la Provincia/Estado:", options=list(DATA_GEOGRAFICA[pais_usuario].keys()), index=0)
 partido_usuario = st.sidebar.selectbox("3. Selecciona el Partido/Ciudad:", options=DATA_GEOGRAFICA[pais_usuario][provincia_usuario], index=0)
 
-# Si el usuario cambia de partido, limpiamos la memoria para forzar una nueva búsqueda
 id_localidad = f"{pais_usuario}_{provincia_usuario}_{partido_usuario}"
 if id_localidad != st.session_state.localidad_actual:
     st.session_state.fechas_disponibles = []
@@ -51,7 +50,6 @@ if id_localidad != st.session_state.localidad_actual:
 
 st.sidebar.write("---")
 
-# PASO A: Botón exclusivo para activar la lectura de metadatos en Earth Engine de forma voluntaria
 btn_conectar_catalogo = st.sidebar.button("🔍 1. Buscar Fechas en Catálogo", use_container_width=True)
 
 if btn_conectar_catalogo:
@@ -65,19 +63,15 @@ if btn_conectar_catalogo:
         if roi_final.size().getInfo() == 0:
             roi_final = roi_pais
 
-        # Limitamos la búsqueda para agilizar la respuesta instantánea del servidor
         coleccion_fechas = ee.ImageCollection('COPERNICUS/S2_SR_HARMONIZED') \
             .filterBounds(roi_final) \
-            .filterDate('2023-01-01', '2024-12-31') \
+            .filterDate('2023-01-01', '2025-12-31') \
             .filter(ee.Filter.lt('CLOUDY_PIXEL_PERCENTAGE', 25))
 
-        # Extracción limpia de strings de fecha sin procesar pixeles
-        st.session_state.fechas_disponibles = coleccion_fechas.aggregate_array('system:index') \
-            .map(lambda idx: ee.String(idx).slice(0, 8)) \
-            .map(lambda s: ee.Date.parse('YYYYMMdd', s).format('YYYY-MM-DD')) \
-            .distinct().sort().getInfo()
+        # CORRECCIÓN DE FORMATO: Extrae la fecha real usando la propiedad nativa del calendario del satélite
+        st.session_state.fechas_disponibles = coleccion_fechas.map(lambda img: ee.Feature(None, {'f': img.date().format('YYYY-MM-DD')})) \
+                                                               .aggregate_array('f').distinct().sort().getInfo()
 
-# PASO B: El menú desplegable de fechas y el botón de cálculo aparecen SOLO si ya se cargó la lista en memoria
 if st.session_state.fechas_disponibles:
     fecha_seleccionada_str = st.sidebar.selectbox(
         "4. Selecciona la Fecha Exacta de la Imagen:",
