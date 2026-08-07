@@ -1,0 +1,109 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+    <meta charset="UTF-8">
+    <title>HydroVision - Monitor Global NDWI</title>
+    <!-- Incluir CSS de Leaflet para el Mapa e hilos de selección predictiva -->
+    <link rel="stylesheet" href="https://unpkg.com" />
+    <link href="https://jsdelivr.net" rel="stylesheet">
+    <style>
+        body { margin: 0; display: flex; font-family: Arial, sans-serif; height: 100vh; }
+        #sidebar { width: 350px; padding: 20px; background: #f8f9fa; box-shadow: 2px 0 5px rgba(0,0,0,0.1); z-index: 1000; }
+        #map { flex-grow: 1; height: 100%; }
+        .control-group { margin-bottom: 15px; }
+        label { display: block; font-weight: bold; margin-bottom: 5px; color: #1a73e8; }
+        button { width: 100%; padding: 10px; background: #1a73e8; color: white; border: none; border-radius: 4px; font-weight: bold; cursor: pointer; }
+    </style>
+</head>
+<body>
+
+    <div id="sidebar">
+        <h2>HydroVision</h2>
+        <p>Visualizador Global de Cuerpos de Agua</p>
+        
+        <!-- Selector Predictivo de País -->
+        <div class="control-group">
+            <label for="select-pais">1. Selecciona el País:</label>
+            <select id="select-pais" placeholder="Escribe para buscar un país..."></select>
+        </div>
+
+        <!-- Selector Predictivo de Provincia -->
+        <div class="control-group">
+            <label for="select-provincia">2. Provincia / Estado:</label>
+            <select id="select-provincia" placeholder="Escribe para buscar provincia..."></select>
+        </div>
+
+        <div class="control-group">
+            <label for="input-anio">3. Año de Análisis:</label>
+            <input type="number" id="input-anio" value="2026" style="width: 80px; padding: 6px;">
+        </div>
+
+        <button id="btn-calcular">Calcular y Mostrar Mapas</button>
+    </div>
+
+    <!-- Contenedor del Mapa Interactivo -->
+    <div id="map"></div>
+
+    <!-- Scripts de Control Hidrológico e Interfaz -->
+    <script src="https://unpkg.com"></script>
+    <script src="https://jsdelivr.net"></script>
+    <script>
+        // Inicializar Mapa Global con Leaflet
+        var map = L.map('map').setView([-34.6, -58.4], 4); 
+        L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png').addTo(map);
+
+        // Activar el buscador inteligente (Escribir y Filtrar) en el selector de Países
+        var paisSelect = new TomSelect("#select-pais", {
+            valueField: 'id', labelField: 'title', searchField: 'title',
+            options: [
+                {id: 'Argentina', title: 'Argentina'},
+                {id: 'Brazil', title: 'Brasil'},
+                {id: 'Chile', title: 'Chile'},
+                {id: 'Mexico', title: 'México'},
+                {id: 'Spain', title: 'España'},
+                {id: 'United States', title: 'Estados Unidos'}
+            ],
+            onChange: function(value) {
+                actualizarProvinciasDinamicamente(value);
+            }
+        });
+
+        // Activar el buscador inteligente para Provincias
+        var provSelect = new TomSelect("#select-provincia", {
+            valueField: 'id', labelField: 'title', searchField: 'title'
+        });
+
+        // Base de datos local simulada para evitar demoras del servidor al tipear
+        var provinciasPorPais = {
+            'Argentina': [
+                {id: 'Buenos Aires', title: 'Buenos Aires'},
+                {id: 'Cordoba', title: 'Córdoba'},
+                {id: 'Santa Fe', title: 'Santa Fe'},
+                {id: 'Mendoza', title: 'Mendoza'}
+            ],
+            'Brazil': [
+                {id: 'Sao Paulo', title: 'São Paulo'},
+                {id: 'Rio de Janeiro', title: 'Rio de Janeiro'}
+            ]
+        };
+
+        function actualizarProvinciasDinamicamente(pais) {
+            provSelect.clearOptions();
+            if(provinciasPorPais[pais]) {
+                provSelect.addOption(provinciasPorPais[pais]);
+            }
+        }
+
+        // Evento al presionar el botón de ejecución
+        document.getElementById('btn-calcular').addEventListener('click', function() {
+            var pais = paisSelect.getValue();
+            var provincia = provSelect.getValue();
+            var anio = document.getElementById('input-anio').value;
+            
+            alert('Enviando solicitud a Google Earth Engine para procesar: ' + provincia + ', ' + pais + ' (' + anio + ')');
+            
+            // Aquí se realiza la llamada fetch() hacia tu servidor backend para incrustar las capas NDWI en Leaflet
+        });
+    </script>
+</body>
+</html>
