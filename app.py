@@ -47,14 +47,18 @@ roi_final = partidos_db.filterBounds(roi_pais).filter(ee.Filter.stringContains('
 if roi_final.size().getInfo() == 0:
     roi_final = roi_pais
 
-# --- EXTRACTOR DE FECHAS REALES DEL CATÁLOGO DE GOOGLE ---
+# --- EXTRACTOR DE FECHAS ULTRA-RÁPIDO (SOLO METADATOS) ---
+# NO procesa imágenes, NO calcula NDWI. Solo extrae las fechas del calendario nativo de Google.
 coleccion_fechas = ee.ImageCollection('COPERNICUS/S2_SR_HARMONIZED') \
     .filterBounds(roi_final) \
-    .filterDate('2021-01-01', '2026-12-31') \
-    .filter(ee.Filter.lt('CLOUDY_PIXEL_PERCENTAGE', 30))
+    .filterDate('2022-01-01', '2026-12-31') \
+    .filter(ee.Filter.lt('CLOUDY_PIXEL_PERCENTAGE', 25))
 
-lista_fechas_reales = coleccion_fechas.map(lambda img: ee.Feature(None, {'f': img.date().format('YYYY-MM-DD')})) \
-                                       .aggregate_array('f').distinct().sort().getInfo()
+# Función directa de metadatos: extrae el string de fecha nativo de forma instantánea
+lista_fechas_reales = coleccion_fechas.aggregate_array('system:index') \
+    .map(lambda idx: ee.String(idx).slice(0, 8)) \
+    .map(lambda s: ee.Date.parse('YYYYMMdd', s).format('YYYY-MM-DD')) \
+    .distinct().sort().getInfo()
 
 # EL MENÚ DESPLEGABLE CON LAS FECHAS REALES DE LA IMAGEN
 if lista_fechas_reales:
@@ -69,7 +73,7 @@ else:
     ejecutar_analisis = False
 
 # =========================================================================
-# 3. LÓGICA DE PROCESAMIENTO ESPACIAL (CRITERIOS HIDROLÓGICOS ESTRICTOS)
+# 3. LÓGICA DE PROCESAMIENTO ESPACIAL (ÚNICAMENTE AL PRESIONAR EL BOTÓN)
 # =========================================================================
 
 mapa_placeholder = st.empty()
@@ -79,6 +83,7 @@ M.add_basemap("HYBRID")
 if ejecutar_analisis and lista_fechas_reales:
     with st.spinner("Procesando evento hídrico e índices estadísticos anuales..."):
         
+        # El año se extrae automáticamente de la fecha elegida
         fecha_obj = datetime.datetime.strptime(fecha_seleccionada_str, '%Y-%m-%d')
         anio_automatico = fecha_obj.year
         
@@ -88,13 +93,14 @@ if ejecutar_analisis and lista_fechas_reales:
         fecha_inicio_evt = (fecha_obj - datetime.timedelta(days=1)).strftime('%Y-%m-%d')
         fecha_fin_evt = (fecha_obj + datetime.timedelta(days=1)).strftime('%Y-%m-%d')
         
+        # Función para calcular el NDWI (Se ejecuta solo para el análisis final solicitado)
         def calcular_ndwi(img):
             qa = img.select('QA60')
             mask = qa.bitwiseAnd(1 << 10).eq(0).And(qa.bitwiseAnd(1 << 11).eq(0))
             ndwi = img.normalizedDifference(['B3', 'B8']).rename('NDWI')
             return img.addBands(ndwi).updateMask(mask)
 
-        # A) PROMEDIO ANUAL AUTOMÁTICO DE FONDO
+        # A) PROMEDIO ANUAL AUTOMÁTICO DE FONDO (PROCESADO EN SEGUNDO PLANO)
         coleccion_anual = ee.ImageCollection('COPERNICUS/S2_SR_HARMONIZED') \
                             .filterBounds(roi_final) \
                             .filterDate(fecha_inicio_anio, fecha_fin_anio) \
@@ -104,7 +110,7 @@ if ejecutar_analisis and lista_fechas_reales:
         frecuencia_anual = coleccion_anual.map(lambda img: img.gt(0)).mean()
         agua_permanente_anual = frecuencia_anual.gte(0.80)
 
-        # B) PROCESAMIENTO DE LA IMAGEN DE LA FECHA ESPECÍFICA SELECCIONADA
+        # B) PROCESAMIENTO EXCLUSIVO DE LA IMAGEN SELECCIONADA
         imagen_fecha = ee.ImageCollection('COPERNICUS/S2_SR_HARMONIZED') \
                          .filterBounds(roi_final) \
                          .filterDate(fecha_inicio_evt, fecha_fin_evt) \
@@ -112,21 +118,20 @@ if ejecutar_analisis and lista_fechas_reales:
                          
         agua_en_fecha = imagen_fecha.gt(0)
 
-        # C) CLASIFICACIÓN CRUZADA DE LAS CAPAS HIDROLÓGICAS EN ESA FECHA
+        # C) CLASIFICACIÓN DE LAS CAPAS SOLICITADAS
         capa_permanente_fecha = agua_en_fecha.And(agua_permanente_anual)
         
         frecuencia_temporal = frecuencia_anual.gte(0.20).And(frecuencia_anual.lte(0.55))
         capa_temporaria_fecha = agua_en_fecha.And(frecuencia_temporal)
 
-        # Centrar el mapa y recortar capas
+        # Centrar el mapa y recortar capas al límite del partido
         M.center_object(roi_final, zoom=10)
         
         recorte_perm_anual = agua_permanente_anual.updateMask(agua_permanente_anual).clip(roi_final)
-        # CORREGIDO: Se eliminó el residuo de puntos suspensivos (= ... =)
         recorte_perm_fecha = capa_permanente_fecha.updateMask(capa_permanente_fecha).clip(roi_final)
         recorte_temp_fecha = capa_temporaria_fecha.updateMask(capa_temporaria_fecha).clip(roi_final)
 
-        # Dibujar las 3 capas solicitadas en el objeto del mapa
+        # Dibujar las 3 capas hidrológicas exactas en el mapa
         M.addLayer(recorte_perm_anual, {'palette': ['#00008B']}, '1. Cuerpos de Agua Permanentes (Promedio Anual de Fondo >80%)')
         M.addLayer(recorte_perm_fecha, {'palette': ['#0000FF']}, '2. Cuerpos de Agua Permanentes (En la Fecha Seleccionada)')
         M.addLayer(recorte_temp_fecha, {'palette': ['#00BFFF']}, '3. Cuerpos de Agua Temporarios (En la Fecha Seleccionada)')
