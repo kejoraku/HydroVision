@@ -12,7 +12,7 @@ st.set_page_config(layout="wide", page_title="HydroVision NDWI", page_icon="💧
 def iniciar_earth_engine():
     try:
         # Inicialización oficial con tu proyecto de Google Cloud
-        ee.Initialize(project='ee-ranierodegiusto') 
+        ee.Initialize(project='ee-raanidg') 
     except Exception as e:
         st.error(f"Error al inicializar Earth Engine: {e}")
 
