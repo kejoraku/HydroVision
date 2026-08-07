@@ -41,7 +41,7 @@ st.sidebar.write("---")
 
 pais_usuario = st.sidebar.selectbox("1. Selecciona el País:", options=list(DATA_GEOGRAFICA.keys()), index=0)
 provincia_usuario = st.sidebar.selectbox("2. Selecciona la Provincia/Estado:", options=list(DATA_GEOGRAFICA[pais_usuario].keys()), index=0)
-partido_usuario = st.sidebar.selectbox("3. Selecciona el Partido/Ciudad:", options=DATA_GEOGRAFICA[pais_usuario][provincia_usuario], index=3) # Apunta a Trenque Lauquen por defecto
+partido_usuario = st.sidebar.selectbox("3. Selecciona el Partido/Ciudad:", options=DATA_GEOGRAFICA[pais_usuario][provincia_usuario], index=3) # Trenque Lauquen por defecto
 
 id_localidad = f"{pais_usuario}_{provincia_usuario}_{partido_usuario}"
 if id_localidad != st.session_state.localidad_actual:
@@ -63,24 +63,20 @@ if btn_conectar_catalogo:
         if roi_final.size().getInfo() == 0:
             roi_final = roi_pais
 
-        # Filtrar colección de Sentinel-2 sobre la ROI
         coleccion_fechas = ee.ImageCollection('COPERNICUS/S2_SR_HARMONIZED') \
             .filterBounds(roi_final) \
             .filterDate('2023-01-01', '2025-12-31') \
             .filter(ee.Filter.lt('CLOUDY_PIXEL_PERCENTAGE', 25))
 
-        # Extracción limpia por lista indexada para evitar el bug de las strings rotas de Google
         lista_propiedades = coleccion_fechas.map(lambda img: ee.Feature(None, {
             'texto': img.date().format('YYYY-MM-DD'),
             'milisegundos': img.get('system:time_start')
         })).reduceColumns(ee.Reducer.toList(2), ['texto', 'milisegundos']).get('list').getInfo()
 
         if lista_propiedades:
-            # Reconstruir un diccionario limpio con la fecha en formato legible y la marca de tiempo original
             dicc_temporal = {}
             for item in lista_propiedades:
                 if item and len(item) == 2:
-                    # Si la fecha viene rota (ej: 2025-12-364), la limpiamos para forzar YYYY-MM-DD
                     fecha_sucia = str(item[0])
                     if len(fecha_sucia) > 10:
                         fecha_sucia = fecha_sucia[:10]
@@ -97,11 +93,10 @@ if st.session_state.diccionario_fechas:
     st.sidebar.write("---")
     ejecutar_analisis = st.sidebar.button("🚀 2. Calcular y Mostrar Mapas", type="primary", use_container_width=True)
 else:
-    st.sidebar.info("💡 Haz clic arriba en 'Buscar Fechas en Catálogo' para desplegar los días disponibles del satélite.")
+    st.sidebar.info("💡 Haz clic arriba en 'Buscar Fechas del Catálogo' para desplegar los días disponibles.")
     ejecutar_analisis = False
-
 # =========================================================================
-# 3. LÓGICA DE PROCESAMIENTO ESPACIAL Y RENDERIZADO (FOLIUM SEGURO)
+# 3. LÓGICA DE PROCESAMIENTO ESPACIAL Y RENDERIZADO DEL MAPA (FOLIUM SEGURO)
 # =========================================================================
 
 # Crear objeto de mapa base nativo de Folium con capa satelital híbrida de Google
@@ -137,6 +132,7 @@ if ejecutar_analisis and st.session_state.diccionario_fechas:
 
         # Mover dinámicamente el centro del mapa de Folium a las coordenadas reales de la ROI
         coords_centro = roi_final.geometry().centroid().coordinates().getInfo()
+        # Línea 121 CORREGIDA:
         mapa_folium.location = [coords_centro[1], coords_centro[0]]
 
         def calcular_ndwi(img):
@@ -188,3 +184,5 @@ if ejecutar_analisis and st.session_state.diccionario_fechas:
 # Agregar el gestor de capas interactivo arriba a la derecha del mapa
 folium.LayerControl().add_to(mapa_folium)
 
+# Renderizar el mapa de Folium de forma segura usando el componente oficial de Streamlit
+st_folium(mapa_folium, width="100%", height=750, returned_objects=[])
