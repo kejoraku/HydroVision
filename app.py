@@ -18,14 +18,14 @@ def iniciar_earth_engine():
 
 iniciar_earth_engine()
 
-# Base de datos local optimizada para mapeo estricto contra la base de datos nativa
+# Base de datos local optimizada para la barra lateral reactiva
 DATA_GEOGRAFICA = {
     "Buenos Aires": ["Trenque Lauquen", "La Plata", "Bahia Blanca", "Tandil", "Pilar", "Tigre", "Chascomus", "Guamini", "San Pedro"],
     "Cordoba": ["Capital", "Rio Cuarto", "Tercero Arriba", "San Justo", "Punilla", "Calamuchita"],
     "Santa Fe": ["La Capital", "Rosario", "General Lopez", "Castellanos", "General Obligado", "San Lorenzo"]
 }
 
-# Traducción estricta para sincronizar los nombres de provincias con el catálogo GAUL
+# Sincronización exacta con las cadenas de texto del catálogo GAUL
 TRADUCCION_PROVINCIAS = {
     "Buenos Aires": "Buenos Aires",
     "Cordoba": "Cordoba",
@@ -59,10 +59,8 @@ btn_conectar_catalogo = st.sidebar.button("🔍 1. Buscar Fechas en Catálogo", 
 if btn_conectar_catalogo:
     with st.sidebar.spinner("Buscando pasadas de Sentinel-2 libres de nubes..."):
         
-        # Cargar base de datos nivel 2 nativa (Partidos/Departamentos mundiales)
+        # Filtro de seguridad nacional (Código 12 = Argentina)
         partidos_db = ee.FeatureCollection("FAO/GAUL/2015/level2")
-        
-        # FILTRO BLINDADO: 12 es el código numérico invariable de Argentina. Evita saltos a otros países.
         roi_final = partidos_db.filter(ee.Filter.eq('adm0_code', 12)) \
                                 .filter(ee.Filter.eq('adm1_name', TRADUCCION_PROVINCIAS[provincia_usuario])) \
                                 .filter(ee.Filter.stringContains('adm2_name', partido_usuario))
@@ -72,7 +70,7 @@ if btn_conectar_catalogo:
             .filterDate('2023-01-01', '2025-12-31') \
             .filter(ee.Filter.lt('CLOUDY_PIXEL_PERCENTAGE', 25))
 
-        # Extracción humana de fechas limpia (YYYY-MM-DD)
+        # Extracción indexada limpia de strings de fecha (YYYY-MM-DD)
         lista_propiedades = coleccion_fechas.map(lambda img: ee.Feature(None, {
             'texto': img.date().format('YYYY-MM-DD'),
             'milisegundos': img.get('system:time_start')
@@ -82,9 +80,9 @@ if btn_conectar_catalogo:
             dicc_temporal = {}
             for item in lista_propiedades:
                 if item and len(item) == 2:
-                    fecha_limpia = str(item)
+                    fecha_limpia = str(item[0])
                     if len(fecha_limpia) == 10 and "-" in fecha_limpia:
-                        dicc_temporal[fecha_limpia] = item
+                        dicc_temporal[fecha_limpia] = item[1]
             st.session_state.diccionario_fechas = dict(sorted(dicc_temporal.items()))
 
 if st.session_state.diccionario_fechas:
@@ -129,11 +127,11 @@ if ejecutar_analisis and st.session_state.diccionario_fechas:
                                 .filter(ee.Filter.eq('adm1_name', TRADUCCION_PROVINCIAS[provincia_usuario])) \
                                 .filter(ee.Filter.stringContains('adm2_name', partido_usuario))
 
-        # CENTRALIZACIÓN ABSOLUTA: Forzamos la extracción de coordenadas del centroide real de Trenque Lauquen
+        # CORRECCIÓN DE LA LÍNEA 121: Centrado directo nativo de Folium sin listas duplicadas de Python
         coords_centro = roi_final.geometry().centroid().coordinates().getInfo()
-        mapa_folium.location = [coords_centro, coords_centro] # Lat, Lon corregido para Folium
+        mapa_folium.location = [coords_centro[1], coords_centro[0]] 
         
-        # DIBUJAR LÍMITES EN PANTALLA: Traza el reborde del Partido en color negro discontinuo
+        # Trazar el contorno del límite del partido en un reborde negro discontinuo
         geometria_geojson = roi_final.geometry().getInfo()
         folium.GeoJson(
             geometria_geojson,
@@ -172,12 +170,12 @@ if ejecutar_analisis and st.session_state.diccionario_fechas:
         frecuencia_temporal = frecuencia_anual.gte(0.20).And(frecuencia_anual.lte(0.55))
         capa_fecha_temp = agua_en_fecha.And(frecuencia_temporal)
         
-        # Recortar estrictamente al contorno del Partido
+        # Recortar capas al Partido
         recorte_anual_perm = capa_anual_perm.updateMask(capa_anual_perm).clip(roi_final)
         recorte_fecha_perm = capa_fecha_perm.updateMask(capa_fecha_perm).clip(roi_final)
         recorte_fecha_temp = capa_fecha_temp.updateMask(capa_fecha_temp).clip(roi_final)
 
-        # Algoritmo de contorno morfológico para marcar los bordes nítidos de los lagos
+        # Contorno morfológico para marcar bordes sólidos
         def crear_borde_marcado(capa_binaria):
             borde = capa_binaria.subtract(capa_binaria.focal_min(1, 'plus', 'pixels')).gt(0)
             return capa_binaria.where(borde, 2)
@@ -186,12 +184,12 @@ if ejecutar_analisis and st.session_state.diccionario_fechas:
         borde_fecha_perm = crear_borde_marcado(recorte_fecha_perm)
         borde_fecha_temp = crear_borde_marcado(recorte_fecha_temp)
 
-        # Mapear mosaicos con paletas de contorno sólido: [Interior, Perímetro marcado]
+        # Extraer mosaicos [Fondo semitransparente, Borde sólido marcado]
         map_id_anual = ee.data.getMapId({'image': borde_anual_perm, 'visParams': {'min': 1, 'max': 2, 'palette': ['#2ECC71', '#006400']}})
         map_id_fecha_perm = ee.data.getMapId({'image': borde_fecha_perm, 'visParams': {'min': 1, 'max': 2, 'palette': ['#9B59B6', '#4A235A']}})
         map_id_fecha_temp = ee.data.getMapId({'image': borde_fecha_temp, 'visParams': {'min': 1, 'max': 2, 'palette': ['#E74C3C', '#7B241C']}})
 
-        # Inyectar las 3 capas como transparencias apilables
+        # Inyectar las 3 capas independientes sobre Folium (Verde, Violeta, Rojo)
         folium.TileLayer(tiles=map_id_anual['tile_fetcher'].url_format, attr='GEE', name='🟢 1. Fondo Anual Permanente (>80%)', overlay=True, opacity=0.45).add_to(mapa_folium)
         folium.TileLayer(tiles=map_id_fecha_perm['tile_fetcher'].url_format, attr='GEE', name='🟣 2. Permanente en la Fecha', overlay=True, opacity=0.55).add_to(mapa_folium)
         folium.TileLayer(tiles=map_id_fecha_temp['tile_fetcher'].url_format, attr='GEE', name='🔴 3. Temporaria en la Fecha (20%-55%)', overlay=True, opacity=0.60).add_to(mapa_folium)
