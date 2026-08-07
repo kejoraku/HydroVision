@@ -1,7 +1,6 @@
 import streamlit as st
 import ee
 import geemap
-import datetime
 
 # =========================================================================
 # 1. CONFIGURACIÓN DE LA PÁGINA E INICIALIZACIÓN DE EARTH ENGINE
@@ -26,7 +25,6 @@ DATA_GEOGRAFICA = {
     }
 }
 
-# Inicializar estados de memoria de Streamlit
 if "fechas_disponibles" not in st.session_state:
     st.session_state.fechas_disponibles = []
 if "localidad_actual" not in st.session_state:
@@ -68,7 +66,6 @@ if btn_conectar_catalogo:
             .filterDate('2023-01-01', '2025-12-31') \
             .filter(ee.Filter.lt('CLOUDY_PIXEL_PERCENTAGE', 25))
 
-        # CORRECCIÓN DE FORMATO: Extrae la fecha real usando la propiedad nativa del calendario del satélite
         st.session_state.fechas_disponibles = coleccion_fechas.map(lambda img: ee.Feature(None, {'f': img.date().format('YYYY-MM-DD')})) \
                                                                .aggregate_array('f').distinct().sort().getInfo()
 
@@ -95,14 +92,16 @@ M.add_basemap("HYBRID")
 if ejecutar_analisis and st.session_state.fechas_disponibles:
     with st.spinner("Procesando evento hídrico e índices estadísticos anuales..."):
         
-        fecha_obj = datetime.datetime.strptime(fecha_seleccionada_str, '%Y-%m-%d')
-        anio_automatico = fecha_obj.year
+        # CORRECCIÓN DEFINITIVA: Extraemos el año directo de los primeros 4 caracteres del string (Inmune a formatos de días)
+        anio_automatico = int(fecha_seleccionada_str.split('-')[0])
         
+        # Reconstruimos las ventanas usando el estándar nativo de Earth Engine sin pasar por datetime externo
         fecha_inicio_anio = f"{anio_automatico}-01-01"
         fecha_fin_anio = f"{anio_automatico}-12-31"
         
-        fecha_inicio_evt = (fecha_obj - datetime.timedelta(days=1)).strftime('%Y-%m-%d')
-        fecha_fin_evt = (fecha_obj + datetime.timedelta(days=1)).strftime('%Y-%m-%d')
+        ee_fecha_base = ee.Date(fecha_seleccionada_str)
+        fecha_inicio_evt = ee_fecha_base.advance(-1, 'day').format('YYYY-MM-DD').getInfo()
+        fecha_fin_evt = ee_fecha_base.advance(1, 'day').format('YYYY-MM-DD').getInfo()
         
         paises_db = ee.FeatureCollection("USDOS/LSIB_SIMPLE/2017")
         roi_pais = paises_db.filter(ee.Filter.eq('country_na', 'Argentina'))
@@ -149,7 +148,7 @@ if ejecutar_analisis and st.session_state.fechas_disponibles:
         recorte_perm_fecha = capa_permanente_fecha.updateMask(capa_permanente_fecha).clip(roi_final)
         recorte_temp_fecha = capa_temporaria_fecha.updateMask(capa_temporaria_fecha).clip(roi_final)
 
-        # Inyectar capas hidrológicas al mapa
+        # Dibujar capas hidrológicas al mapa
         M.addLayer(recorte_perm_anual, {'palette': ['#00008B']}, '1. Cuerpos de Agua Permanentes (Promedio Anual de Fondo >80%)')
         M.addLayer(recorte_perm_fecha, {'palette': ['#0000FF']}, '2. Cuerpos de Agua Permanentes (En la Fecha Seleccionada)')
         M.addLayer(recorte_temp_fecha, {'palette': ['#00BFFF']}, '3. Cuerpos de Agua Temporarios (En la Fecha Seleccionada)')
