@@ -93,13 +93,12 @@ if st.session_state.diccionario_fechas:
     st.sidebar.write("---")
     ejecutar_analisis = st.sidebar.button("🚀 2. Calcular y Mostrar Mapas", type="primary", use_container_width=True)
 else:
-    st.sidebar.info("💡 Haz clic arriba en 'Buscar Fechas del Catálogo' para desplegar los días disponibles.")
+    st.sidebar.info("💡 Haz clic arriba en 'Buscar Fechas en Catálogo' para desplegar los días disponibles.")
     ejecutar_analisis = False
 # =========================================================================
 # 3. LÓGICA DE PROCESAMIENTO ESPACIAL Y RENDERIZADO DEL MAPA (FOLIUM SEGURO)
 # =========================================================================
 
-# Crear objeto de mapa base nativo de Folium con capa satelital híbrida de Google
 mapa_folium = folium.Map(location=[-35.9722, -62.7145], zoom_start=10, control_scale=True)
 folium.TileLayer(
     tiles='https://google.com{x}&y={y}&z={z}',
@@ -112,7 +111,6 @@ folium.TileLayer(
 if ejecutar_analisis and st.session_state.diccionario_fechas:
     with st.spinner("Procesando evento hídrico e índices estadísticos anuales..."):
         
-        # Reconstruir las variables de tiempo nativas en Earth Engine
         ee_fecha_base = ee.Date(milisegundos_seleccionados)
         anio_automatico = ee_fecha_base.get('year').getInfo()
         
@@ -130,10 +128,16 @@ if ejecutar_analisis and st.session_state.diccionario_fechas:
         if roi_final.size().getInfo() == 0:
             roi_final = roi_pais
 
-        # Mover dinámicamente el centro del mapa de Folium a las coordenadas reales de la ROI
+        # Mover la cámara de Folium e inyectar el reborde general del Partido
         coords_centro = roi_final.geometry().centroid().coordinates().getInfo()
-        # Línea 121 CORREGIDA:
         mapa_folium.location = [coords_centro[1], coords_centro[0]]
+        
+        geometria_geojson = roi_final.geometry().getInfo()
+        folium.GeoJson(
+            geometria_geojson,
+            name=f"Límites Políticos de {partido_usuario}",
+            style_function=lambda x: {'fillColor': 'none', 'color': '#FFFFFF', 'weight': 2, 'dashArray': '5, 5'}
+        ).add_to(mapa_folium)
 
         def calcular_ndwi(img):
             qa = img.select('QA60')
@@ -151,7 +155,7 @@ if ejecutar_analisis and st.session_state.diccionario_fechas:
         frecuencia_anual = coleccion_anual.map(lambda img: img.gt(0)).mean()
         agua_permanente_anual = frecuencia_anual.gte(0.80)
 
-        # B) PROCESAMIENTO DE LA IMAGEN DE LA FECHA ESPECÍFICA SELECCIONADA
+        # B) PROCESAMIENTO DE LA IMAGEN DE LA FECHA ESPECÍFICA
         imagen_fecha = ee.ImageCollection('COPERNICUS/S2_SR_HARMONIZED') \
                          .filterBounds(roi_final) \
                          .filterDate(fecha_inicio_evt, fecha_fin_evt) \
@@ -159,27 +163,41 @@ if ejecutar_analisis and st.session_state.diccionario_fechas:
                          
         agua_en_fecha = imagen_fecha.gt(0)
 
-        # C) CLASIFICACIÓN DE LAS 3 CAPAS SOLICITADAS
-        capa_permanente_fecha = agua_en_fecha.And(agua_permanente_anual)
+        # C) INTERSECCIÓN DE LAS 3 CAPAS INDEPENDIENTES SOLICITADAS
+        capa_anual_perm = agua_permanente_anual
+        capa_fecha_perm = agua_en_fecha.And(agua_permanente_anual)
+        
         frecuencia_temporal = frecuencia_anual.gte(0.20).And(frecuencia_anual.lte(0.55))
-        capa_temporaria_fecha = agua_en_fecha.And(frecuencia_temporal)
+        capa_fecha_temp = agua_en_fecha.And(frecuencia_temporal)
         
-        # Enmascarar y recortar capas
-        recorte_perm_anual = agua_permanente_anual.updateMask(agua_permanente_anual).clip(roi_final)
-        recorte_perm_fecha = capa_permanente_fecha.updateMask(capa_permanente_fecha).clip(roi_final)
-        recorte_temp_fecha = capa_temporaria_fecha.updateMask(capa_temporaria_fecha).clip(roi_final)
+        # Recortar las geometrías crudas al Partido
+        recorte_anual_perm = capa_anual_perm.updateMask(capa_anual_perm).clip(roi_final)
+        recorte_fecha_perm = capa_fecha_perm.updateMask(capa_fecha_perm).clip(roi_final)
+        recorte_fecha_temp = capa_fecha_temp.updateMask(capa_fecha_temp).clip(roi_final)
 
-        # Extraer los enlaces de mosaico (Tile URLs) oficiales desde los servidores de Google
-        map_id_anual = ee.data.getMapId({'image': recorte_perm_anual, 'visParams': {'palette': ['#00008B']}})
-        map_id_perm_fecha = ee.data.getMapId({'image': recorte_perm_fecha, 'visParams': {'palette': ['#0000FF']}})
-        map_id_temp_fecha = ee.data.getMapId({'image': recorte_temp_fecha, 'visParams': {'palette': ['#00BFFF']}})
+        # FUNCIÓN INTERNA PARA CREAR CONTORNOS CON BORDES MARCADOS
+        # Detecta los cambios de píxel (0 a 1) para pintar una línea sólida en el perímetro
+        def crear_borde_marcado(capa_binaria):
+            borde = capa_binaria.subtract(capa_binaria.focal_min(1, 'plus', 'pixels')).gt(0)
+            return capa_binaria.where(borde, 2) # Píxeles internos = 1, Píxeles de borde = 2
 
-        # Inyectar las capas de Earth Engine directamente sobre el mapa base de Folium
-        folium.TileLayer(tiles=map_id_anual['tile_fetcher'].url_format, attr='GEE', name='1. Cuerpos de Agua Permanentes Anuales (>80%)', overlay=True).add_to(mapa_folium)
-        folium.TileLayer(tiles=map_id_perm_fecha['tile_fetcher'].url_format, attr='GEE', name='2. Cuerpos de Agua Permanentes (En la Fecha)', overlay=True).add_to(mapa_folium)
-        folium.TileLayer(tiles=map_id_temp_fecha['tile_fetcher'].url_format, attr='GEE', name='3. Cuerpos de Agua Temporarios (En la Fecha)', overlay=True).add_to(mapa_folium)
+        borde_anual_perm = crear_borde_marcado(recorte_anual_perm)
+        borde_fecha_perm = crear_borde_marcado(recorte_fecha_perm)
+        borde_fecha_temp = crear_borde_marcado(recorte_fecha_temp)
+
+        # Configurar paletas visuales personalizadas con gradiente: [Fondo semitransparente, Borde sólido marcado]
+        # Capa 1: Verde | Capa 2: Violeta | Capa 3: Rojo
+        map_id_anual = ee.data.getMapId({'image': borde_anual_perm, 'visParams': {'min': 1, 'max': 2, 'palette': ['#2ECC71', '#006400']}})
+        map_id_fecha_perm = ee.data.getMapId({'image': borde_fecha_perm, 'visParams': {'min': 1, 'max': 2, 'palette': ['#9B59B6', '#4A235A']}})
+        map_id_fecha_temp = ee.data.getMapId({'image': borde_fecha_temp, 'visParams': {'min': 1, 'max': 2, 'palette': ['#E74C3C', '#7B241C']}})
+
+        # Inyectar las capas de forma apilada e independiente con control de opacidad de fondo
+        folium.TileLayer(tiles=map_id_anual['tile_fetcher'].url_format, attr='GEE', name='🟢 1. Fondo Anual Permanente (>80%)', overlay=True, opacity=0.45).add_to(mapa_folium)
+        folium.TileLayer(tiles=map_id_fecha_perm['tile_fetcher'].url_format, attr='GEE', name='🟣 2. Permanente en la Fecha', overlay=True, opacity=0.55).add_to(mapa_folium)
+        folium.TileLayer(tiles=map_id_fecha_temp['tile_fetcher'].url_format, attr='GEE', name='🔴 3. Temporaria en la Fecha (20%-55%)', overlay=True, opacity=0.60).add_to(mapa_folium)
+
         
-        st.success(f"📊 ¡Mapas hídricos generados con éxito para la escena del {fecha_seleccionada_texto}! Año analizado automáticamente: {anio_automatico}")
+        st.success(f"📊 ¡Mapas de superposición hídrica generados con éxito para el {fecha_seleccionada_texto}!")
 
 # Agregar el gestor de capas interactivo arriba a la derecha del mapa
 folium.LayerControl().add_to(mapa_folium)
