@@ -48,22 +48,20 @@ if roi_final.size().getInfo() == 0:
     roi_final = roi_pais
 
 # --- EXTRACTOR DE FECHAS REALES DEL CATÁLOGO DE GOOGLE ---
-# Realiza la consulta masiva sobre el catálogo real de Google tal como solicitaste originalmente
 coleccion_fechas = ee.ImageCollection('COPERNICUS/S2_SR_HARMONIZED') \
     .filterBounds(roi_final) \
     .filterDate('2021-01-01', '2026-12-31') \
     .filter(ee.Filter.lt('CLOUDY_PIXEL_PERCENTAGE', 30))
 
-# Extraer el string de la fecha limpia directamente desde el metadato nativo de la imagen
 lista_fechas_reales = coleccion_fechas.map(lambda img: ee.Feature(None, {'f': img.date().format('YYYY-MM-DD')})) \
                                        .aggregate_array('f').distinct().sort().getInfo()
 
-# EL MENÚ DESPLEGABLE CON LAS FECHAS REALES DE LA IMAGEN SOLICITADO
+# EL MENÚ DESPLEGABLE CON LAS FECHAS REALES DE LA IMAGEN
 if lista_fechas_reales:
     fecha_seleccionada_str = st.sidebar.selectbox(
         "4. Selecciona la Fecha Exacta de la Imagen del Catálogo:",
         options=lista_fechas_reales,
-        index=len(lista_fechas_reales) - 1 # Apunta a la última órbita real disponible
+        index=len(lista_fechas_reales) - 1
     )
     ejecutar_analisis = st.sidebar.button("Calcular y Mostrar Mapas", type="primary")
 else:
@@ -74,7 +72,6 @@ else:
 # 3. LÓGICA DE PROCESAMIENTO ESPACIAL (CRITERIOS HIDROLÓGICOS ESTRICTOS)
 # =========================================================================
 
-# El contenedor del mapa se inicializa abajo para asegurar que no se quede la pantalla gris
 mapa_placeholder = st.empty()
 M = geemap.Map(center=[-34.9214, -57.9545], zoom=10)
 M.add_basemap("HYBRID")
@@ -82,7 +79,6 @@ M.add_basemap("HYBRID")
 if ejecutar_analisis and lista_fechas_reales:
     with st.spinner("Procesando evento hídrico e índices estadísticos anuales..."):
         
-        # El año se extrae de forma automática del string exacto seleccionado sin procesamientos estáticos intermedios
         fecha_obj = datetime.datetime.strptime(fecha_seleccionada_str, '%Y-%m-%d')
         anio_automatico = fecha_obj.year
         
@@ -126,7 +122,8 @@ if ejecutar_analisis and lista_fechas_reales:
         M.center_object(roi_final, zoom=10)
         
         recorte_perm_anual = agua_permanente_anual.updateMask(agua_permanente_anual).clip(roi_final)
-        recorte_perm_fecha = ... = capa_permanente_fecha.updateMask(capa_permanente_fecha).clip(roi_final)
+        # CORREGIDO: Se eliminó el residuo de puntos suspensivos (= ... =)
+        recorte_perm_fecha = capa_permanente_fecha.updateMask(capa_permanente_fecha).clip(roi_final)
         recorte_temp_fecha = capa_temporaria_fecha.updateMask(capa_temporaria_fecha).clip(roi_final)
 
         # Dibujar las 3 capas solicitadas en el objeto del mapa
