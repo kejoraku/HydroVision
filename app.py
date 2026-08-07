@@ -11,8 +11,8 @@ st.set_page_config(layout="wide", page_title="HydroVision NDWI", page_icon="💧
 @st.cache_resource
 def iniciar_earth_engine():
     try:
-        # Al estar en tu casa, esto leerá el token que acabas de guardar automáticamente
-        ee.Initialize()
+        # Coloca tu ID de proyecto de Google Cloud / Earth Engine aquí adentro
+        ee.Initialize(project='ee-raanidg') 
     except Exception as e:
         st.error(f"Error al inicializar Earth Engine: {e}")
 
