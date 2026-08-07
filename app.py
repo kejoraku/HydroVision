@@ -25,20 +25,22 @@ DATA_GEOGRAFICA = {
     "Santa Fe": ["La Capital", "Rosario", "General Lopez", "Castellanos", "General Obligado", "San Lorenzo"]
 }
 
-# Sincronización exacta con las cadenas de texto del catálogo GAUL
 TRADUCCION_PROVINCIAS = {
     "Buenos Aires": "Buenos Aires",
     "Cordoba": "Cordoba",
     "Santa Fe": "Santa Fe"
 }
 
-if "diccionario_fechas" not in st.session_state:
-    st.session_state.diccionario_fechas = {}
+# Inicializar estados de memoria persistentes de Streamlit
+if "lista_fechas_combo" not in st.session_state:
+    st.session_state.lista_fechas_combo = []
+if "mapeo_milisegundos" not in st.session_state:
+    st.session_state.mapeo_milisegundos = {}
 if "localidad_actual" not in st.session_state:
     st.session_state.localidad_actual = ""
 
 # =========================================================================
-# 2. DISEÑO DE LA INTERFAZ DE USUARIO (SIDEBAR NACIONAL)
+# 2. DISEÑO DE LA INTERFAZ DE USUARIO (SIDEBAR FORMULARIO)
 # =========================================================================
 st.sidebar.title("💧 HydroVision Argentina")
 st.sidebar.markdown("### Clasificación Hídrica - Límites del Partido")
@@ -49,49 +51,54 @@ partido_usuario = st.sidebar.selectbox("2. Selecciona el Departamento/Partido:",
 
 id_localidad = f"{provincia_usuario}_{partido_usuario}"
 if id_localidad != st.session_state.localidad_actual:
-    st.session_state.diccionario_fechas = {}
+    st.session_state.lista_fechas_combo = []
+    st.session_state.mapeo_milisegundos = {}
     st.session_state.localidad_actual = id_localidad
 
 st.sidebar.write("---")
 
+# PASO A: Botón de búsqueda de fechas en el catálogo
 btn_conectar_catalogo = st.sidebar.button("🔍 1. Buscar Fechas en Catálogo", use_container_width=True)
 
 if btn_conectar_catalogo:
-    with st.sidebar.spinner("Buscando pasadas de Sentinel-2 libres de nubes..."):
-        
-        # Filtro de seguridad nacional (Código 12 = Argentina)
+    with st.sidebar.spinner("Buscando pasadas de Sentinel-2..."):
         partidos_db = ee.FeatureCollection("FAO/GAUL/2015/level2")
-        roi_final = partidos_db.filter(ee.Filter.eq('adm0_code', 12)) \
+        roi_fechas = partidos_db.filter(ee.Filter.eq('adm0_code', 12)) \
                                 .filter(ee.Filter.eq('adm1_name', TRADUCCION_PROVINCIAS[provincia_usuario])) \
                                 .filter(ee.Filter.stringContains('adm2_name', partido_usuario))
 
         coleccion_fechas = ee.ImageCollection('COPERNICUS/S2_SR_HARMONIZED') \
-            .filterBounds(roi_final) \
+            .filterBounds(roi_fechas) \
             .filterDate('2023-01-01', '2025-12-31') \
             .filter(ee.Filter.lt('CLOUDY_PIXEL_PERCENTAGE', 25))
 
-        # Extracción indexada limpia de strings de fecha (YYYY-MM-DD)
         lista_propiedades = coleccion_fechas.map(lambda img: ee.Feature(None, {
             'texto': img.date().format('YYYY-MM-DD'),
             'milisegundos': img.get('system:time_start')
         })).reduceColumns(ee.Reducer.toList(2), ['texto', 'milisegundos']).get('list').getInfo()
 
         if lista_propiedades:
-            dicc_temporal = {}
+            tmp_milisegundos = {}
+            tmp_fechas_texto = []
             for item in lista_propiedades:
                 if item and len(item) == 2:
-                    fecha_limpia = str(item[0])
-                    if len(fecha_limpia) == 10 and "-" in fecha_limpia:
-                        dicc_temporal[fecha_limpia] = item[1]
-            st.session_state.diccionario_fechas = dict(sorted(dicc_temporal.items()))
+                    fecha_limpia = str(item[0])[:10]
+                    tmp_milisegundos[fecha_limpia] = item[1]
+                    if fecha_limpia not in tmp_fechas_texto:
+                        tmp_fechas_texto.append(fecha_limpia)
+            
+            st.session_state.lista_fechas_combo = sorted(tmp_fechas_texto)
+            st.session_state.mapeo_milisegundos = tmp_milisegundos
+            st.rerun() # Fuerza a Streamlit a redibujar el Punto 4 de forma inmediata
 
-if st.session_state.diccionario_fechas:
+# PASO B: Desplegable dinámico y ejecución de mapas
+if st.session_state.lista_fechas_combo:
     fecha_seleccionada_texto = st.sidebar.selectbox(
         "3. Selecciona la Fecha Real de la Imagen:",
-        options=list(st.session_state.diccionario_fechas.keys()),
-        index=len(st.session_state.diccionario_fechas) - 1
+        options=st.session_state.lista_fechas_combo,
+        index=len(st.session_state.lista_fechas_combo) - 1
     )
-    milisegundos_seleccionados = st.session_state.diccionario_fechas[fecha_seleccionada_texto]
+    milisegundos_seleccionados = st.session_state.mapeo_milisegundos[fecha_seleccionada_texto]
     st.sidebar.write("---")
     ejecutar_analisis = st.sidebar.button("🚀 2. Calcular y Mostrar Mapas", type="primary", use_container_width=True)
 else:
@@ -110,7 +117,7 @@ folium.TileLayer(
     control=True
 ).add_to(mapa_folium)
 
-if ejecutar_analisis and st.session_state.diccionario_fechas:
+if ejecutar_analisis and st.session_state.lista_fechas_combo:
     with st.spinner("Procesando evento hídrico e índices estadísticos anuales..."):
         
         ee_fecha_base = ee.Date(milisegundos_seleccionados)
@@ -127,11 +134,11 @@ if ejecutar_analisis and st.session_state.diccionario_fechas:
                                 .filter(ee.Filter.eq('adm1_name', TRADUCCION_PROVINCIAS[provincia_usuario])) \
                                 .filter(ee.Filter.stringContains('adm2_name', partido_usuario))
 
-        # CORRECCIÓN DE LA LÍNEA 121: Centrado directo nativo de Folium sin listas duplicadas de Python
+        # Centrado dinámico corregido para Folium leyendo coordenadas nativas invertidas
         coords_centro = roi_final.geometry().centroid().coordinates().getInfo()
         mapa_folium.location = [coords_centro[1], coords_centro[0]] 
         
-        # Trazar el contorno del límite del partido en un reborde negro discontinuo
+        # Trazar contorno negro discontinuo sobre el partido
         geometria_geojson = roi_final.geometry().getInfo()
         folium.GeoJson(
             geometria_geojson,
@@ -170,12 +177,10 @@ if ejecutar_analisis and st.session_state.diccionario_fechas:
         frecuencia_temporal = frecuencia_anual.gte(0.20).And(frecuencia_anual.lte(0.55))
         capa_fecha_temp = agua_en_fecha.And(frecuencia_temporal)
         
-        # Recortar capas al Partido
         recorte_anual_perm = capa_anual_perm.updateMask(capa_anual_perm).clip(roi_final)
         recorte_fecha_perm = capa_fecha_perm.updateMask(capa_fecha_perm).clip(roi_final)
         recorte_fecha_temp = capa_fecha_temp.updateMask(capa_fecha_temp).clip(roi_final)
 
-        # Contorno morfológico para marcar bordes sólidos
         def crear_borde_marcado(capa_binaria):
             borde = capa_binaria.subtract(capa_binaria.focal_min(1, 'plus', 'pixels')).gt(0)
             return capa_binaria.where(borde, 2)
