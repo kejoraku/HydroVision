@@ -18,11 +18,18 @@ def iniciar_earth_engine():
 
 iniciar_earth_engine()
 
-# Base de datos local oficializada bajo las nomenclaturas estrictas del IGN Argentina
+# Base de datos local optimizada para mapeo estricto contra la base de datos nativa
 DATA_GEOGRAFICA = {
     "Buenos Aires": ["Trenque Lauquen", "La Plata", "Bahia Blanca", "Tandil", "Pilar", "Tigre", "Chascomus", "Guamini", "San Pedro"],
     "Cordoba": ["Capital", "Rio Cuarto", "Tercero Arriba", "San Justo", "Punilla", "Calamuchita"],
     "Santa Fe": ["La Capital", "Rosario", "General Lopez", "Castellanos", "General Obligado", "San Lorenzo"]
+}
+
+# Traducción estricta para sincronizar los nombres de provincias con el catálogo GAUL
+TRADUCCION_PROVINCIAS = {
+    "Buenos Aires": "Buenos Aires",
+    "Cordoba": "Cordoba",
+    "Santa Fe": "Santa Fe"
 }
 
 if "diccionario_fechas" not in st.session_state:
@@ -34,11 +41,11 @@ if "localidad_actual" not in st.session_state:
 # 2. DISEÑO DE LA INTERFAZ DE USUARIO (SIDEBAR NACIONAL)
 # =========================================================================
 st.sidebar.title("💧 HydroVision Argentina")
-st.sidebar.markdown("### Clasificación Hídrica con Cartografía Oficial IGN")
+st.sidebar.markdown("### Clasificación Hídrica - Límites del Partido")
 st.sidebar.write("---")
 
 provincia_usuario = st.sidebar.selectbox("1. Selecciona la Provincia:", options=list(DATA_GEOGRAFICA.keys()), index=0)
-partido_usuario = st.sidebar.selectbox("2. Selecciona el Departamento/Partido:", options=DATA_GEOGRAFICA[provincia_usuario], index=0) # Trenque Lauquen por defecto
+partido_usuario = st.sidebar.selectbox("2. Selecciona el Departamento/Partido:", options=DATA_GEOGRAFICA[provincia_usuario], index=0)
 
 id_localidad = f"{provincia_usuario}_{partido_usuario}"
 if id_localidad != st.session_state.localidad_actual:
@@ -50,22 +57,22 @@ st.sidebar.write("---")
 btn_conectar_catalogo = st.sidebar.button("🔍 1. Buscar Fechas en Catálogo", use_container_width=True)
 
 if btn_conectar_catalogo:
-    with st.sidebar.spinner("Buscando pasadas de Sentinel-2 en el IGN..."):
-        # Cargar capa oficial de departamentos de la República Argentina (IGN)
-        departamentos_db = ee.FeatureCollection("WM/geo_boundaries/IGN_Argentina/v1/departamentos")
-        roi_final = departamentos_db.filter(ee.Filter.eq('provincia', provincia_usuario)) \
-                                    .filter(ee.Filter.eq('nombre', partido_usuario))
-
-        # En caso de fallar por tildes, aplica un respaldo por límites espaciales directos
-        if roi_final.size().getInfo() == 0:
-            roi_final = departamentos_db.filter(ee.Filter.eq('provincia', provincia_usuario))
+    with st.sidebar.spinner("Buscando pasadas de Sentinel-2 libres de nubes..."):
+        
+        # Cargar base de datos nivel 2 nativa (Partidos/Departamentos mundiales)
+        partidos_db = ee.FeatureCollection("FAO/GAUL/2015/level2")
+        
+        # FILTRO BLINDADO: 12 es el código numérico invariable de Argentina. Evita saltos a otros países.
+        roi_final = partidos_db.filter(ee.Filter.eq('adm0_code', 12)) \
+                                .filter(ee.Filter.eq('adm1_name', TRADUCCION_PROVINCIAS[provincia_usuario])) \
+                                .filter(ee.Filter.stringContains('adm2_name', partido_usuario))
 
         coleccion_fechas = ee.ImageCollection('COPERNICUS/S2_SR_HARMONIZED') \
             .filterBounds(roi_final) \
             .filterDate('2023-01-01', '2025-12-31') \
             .filter(ee.Filter.lt('CLOUDY_PIXEL_PERCENTAGE', 25))
 
-        # Extracción humana de fechas: formatea de manera limpia a YYYY-MM-DD ignorando códigos rotos
+        # Extracción humana de fechas limpia (YYYY-MM-DD)
         lista_propiedades = coleccion_fechas.map(lambda img: ee.Feature(None, {
             'texto': img.date().format('YYYY-MM-DD'),
             'milisegundos': img.get('system:time_start')
@@ -75,9 +82,9 @@ if btn_conectar_catalogo:
             dicc_temporal = {}
             for item in lista_propiedades:
                 if item and len(item) == 2:
-                    fecha_limpia = str(item[0])
+                    fecha_limpia = str(item)
                     if len(fecha_limpia) == 10 and "-" in fecha_limpia:
-                        dicc_temporal[fecha_limpia] = item[1]
+                        dicc_temporal[fecha_limpia] = item
             st.session_state.diccionario_fechas = dict(sorted(dicc_temporal.items()))
 
 if st.session_state.diccionario_fechas:
@@ -117,18 +124,16 @@ if ejecutar_analisis and st.session_state.diccionario_fechas:
         fecha_inicio_evt = ee_fecha_base.advance(-1, 'day')
         fecha_fin_evt = ee_fecha_base.advance(1, 'day')
         
-        departamentos_db = ee.FeatureCollection("WM/geo_boundaries/IGN_Argentina/v1/departamentos")
-        roi_final = departamentos_db.filter(ee.Filter.eq('provincia', provincia_usuario)) \
-                                    .filter(ee.Filter.eq('nombre', partido_usuario))
-        
-        if roi_final.size().getInfo() == 0:
-            roi_final = departamentos_db.filter(ee.Filter.eq('provincia', provincia_usuario))
+        partidos_db = ee.FeatureCollection("FAO/GAUL/2015/level2")
+        roi_final = partidos_db.filter(ee.Filter.eq('adm0_code', 12)) \
+                                .filter(ee.Filter.eq('adm1_name', TRADUCCION_PROVINCIAS[provincia_usuario])) \
+                                .filter(ee.Filter.stringContains('adm2_name', partido_usuario))
 
-        # CENTRALIZACIÓN PERFECTA: Extrae el centroide matemático real de Trenque Lauquen
+        # CENTRALIZACIÓN ABSOLUTA: Forzamos la extracción de coordenadas del centroide real de Trenque Lauquen
         coords_centro = roi_final.geometry().centroid().coordinates().getInfo()
-        mapa_folium.location = [coords_centro[1], coords_centro[0]] # [Latitud, Longitud] para Folium
+        mapa_folium.location = [coords_centro, coords_centro] # Lat, Lon corregido para Folium
         
-        # DIBUJAR LÍMITES POLÍTICOS EN PANTALLA: Traza el reborde del Partido en color negro discontinuo
+        # DIBUJAR LÍMITES EN PANTALLA: Traza el reborde del Partido en color negro discontinuo
         geometria_geojson = roi_final.geometry().getInfo()
         folium.GeoJson(
             geometria_geojson,
