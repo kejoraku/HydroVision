@@ -11,14 +11,14 @@ st.set_page_config(layout="wide", page_title="HydroVision NDWI", page_icon="💧
 @st.cache_resource
 def iniciar_earth_engine():
     try:
-        # Inicialización oficial con tu proyecto de Google Cloud
+        # CORREGIDO: Inicialización oficial usando tu usuario real verificado de GEE
         ee.Initialize(project='ee-raanidg') 
     except Exception as e:
         st.error(f"Error al inicializar Earth Engine: {e}")
 
 iniciar_earth_engine()
 
-# Diccionario estático rápido País -> Provincias (FAO GAUL Level 1)
+# Diccionario estático País -> Provincias (FAO GAUL Level 1)
 DATA_GEOGRAFICA = {
     "Argentina": ["Buenos Aires", "Cordoba", "Santa Fe", "Mendoza", "Chaco", "Formosa", "Misiones", "Corrientes", "Entre Rios", "La Pampa", "Rio Negro", "Chubut", "Santa Cruz", "Tierra del Fuego", "San Juan", "San Luis", "La Rioja", "Catamarca", "Santiago del Estero", "Tucuman", "Salta", "Jujuy", "Neuquén"],
     "Brazil": ["Sao Paulo", "Rio de Janeiro", "Minas Gerais", "Bahia", "Parana", "Rio Grande do Sul", "Amazonas", "Mato Grosso"],
@@ -63,11 +63,11 @@ ejecutar_analisis = st.sidebar.button("Calcular y Mostrar Mapas", type="primary"
 # 3. LÓGICA DE PROCESAMIENTO ESPACIAL Y RENDERIZADO DEL MAPA
 # =========================================================================
 
-# Inicializar el mapa base global sin mover la cámara al inicio
-M = geemap.Map()
+# Inicializar mapa base estático centrado en coordenadas fijas de Argentina para evitar errores de NoneType
+M = geemap.Map(center=[-38.4161, -63.6167], zoom=4)
 M.add_basemap("HYBRID") 
 
-# El procesamiento espacial se ejecuta SOLAMENTE cuando el usuario presiona el botón
+# El procesamiento espacial se ejecuta de forma segura SOLO si el usuario presiona el botón
 if ejecutar_analisis:
     with st.spinner("Procesando imágenes satelitales Sentinel-2 en Google Earth Engine..."):
         
@@ -78,9 +78,6 @@ if ejecutar_analisis:
         
         roi = provincias_db.filter(ee.Filter.eq('adm0_name', pais_seleccionado)) \
                            .filter(ee.Filter.eq('adm1_name', provincia_seleccionada))
-        
-        # CORRECCIÓN DE LA LÍNEA 91: El mapa se centra únicamente cuando roi tiene datos válidos
-        M.centerObject(roi, 7)
         
         coleccion_s2 = ee.ImageCollection('COPERNICUS/S2_SR_HARMONIZED') \
             .filterBounds(roi) \
@@ -118,5 +115,5 @@ if ejecutar_analisis:
         M.addLayer(capa_temporaria, {'palette': ['#00BFFF']}, 'Cuerpos de Agua Temporarios (20%-55%)')
         M.addLayer(zona_inundada, {'palette': ['#FF0000']}, 'Zonas de Inundación / Crecidas Excesivas')
 
-# Renderizar el mapa en pantalla
+# Imprimir el contenedor final en el navegador
 M.to_streamlit(height=750)
