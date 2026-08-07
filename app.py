@@ -118,6 +118,9 @@ if ejecutar_analisis:
             # Comparar el evento específico contra el promedio anual permanente
             # Si hay agua en la fecha elegida, pero históricamente el píxel está seco = Inundación por crecida
             zona_inundada = agua_en_fecha.where(frecuencia_anual.gte(0.55), 0)
+
+            # Forzar al mapa a enfocar y hacer zoom exacto sobre el partido analizado
+            M.center_object(roi, zoom=11)
             
             # Recortar capas a la visualización de la zona
             capa_permanente = agua_permanente.updateMask(agua_permanente).clip(roi)
