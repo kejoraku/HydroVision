@@ -25,8 +25,9 @@ DATA_GEOGRAFICA = {
     }
 }
 
-if "fechas_disponibles" not in st.session_state:
-    st.session_state.fechas_disponibles = []
+# Inicializar estados de memoria de Streamlit para no perder los datos entre clics
+if "diccionario_fechas" not in st.session_state:
+    st.session_state.diccionario_fechas = {}
 if "localidad_actual" not in st.session_state:
     st.session_state.localidad_actual = ""
 
@@ -43,7 +44,7 @@ partido_usuario = st.sidebar.selectbox("3. Selecciona el Partido/Ciudad:", optio
 
 id_localidad = f"{pais_usuario}_{provincia_usuario}_{partido_usuario}"
 if id_localidad != st.session_state.localidad_actual:
-    st.session_state.fechas_disponibles = []
+    st.session_state.diccionario_fechas = {}
     st.session_state.localidad_actual = id_localidad
 
 st.sidebar.write("---")
@@ -61,20 +62,32 @@ if btn_conectar_catalogo:
         if roi_final.size().getInfo() == 0:
             roi_final = roi_pais
 
+        # Filtrar colección de Sentinel-2 sobre la ROI
         coleccion_fechas = ee.ImageCollection('COPERNICUS/S2_SR_HARMONIZED') \
             .filterBounds(roi_final) \
             .filterDate('2023-01-01', '2025-12-31') \
             .filter(ee.Filter.lt('CLOUDY_PIXEL_PERCENTAGE', 25))
 
-        st.session_state.fechas_disponibles = coleccion_fechas.map(lambda img: ee.Feature(None, {'f': img.date().format('YYYY-MM-DD')})) \
-                                                               .aggregate_array('f').distinct().sort().getInfo()
+        # CORRECCIÓN DE FONDO: Extraemos la estampa de tiempo numérica (milisegundos) y el string formateado de forma segura
+        lista_propiedades = coleccion_fechas.map(lambda img: ee.Feature(None, {
+            'texto': img.date().format('YYYY-MM-DD'),
+            'milisegundos': img.get('system:time_start')
+        })).reduceColumns(ee.Reducer.toList(2), ['texto', 'milisegundos']).get('list').getInfo()
 
-if st.session_state.fechas_disponibles:
-    fecha_seleccionada_str = st.sidebar.selectbox(
+        # Armamos un diccionario local en Python: "Fecha Visible" -> "Milisegundos de Google"
+        # Esto elimina cualquier error de conversión de texto a futuro
+        if lista_propiedades:
+            dicc_temporal = {item[0]: item[1] for item in lista_propiedades if item[0] and item[1]}
+            st.session_state.diccionario_fechas = dict(sorted(dicc_temporal.items()))
+
+# El menú desplegable muestra la fecha limpia, pero guarda los milisegundos numéricos de fondo
+if st.session_state.diccionario_fechas:
+    fecha_seleccionada_texto = st.sidebar.selectbox(
         "4. Selecciona la Fecha Exacta de la Imagen:",
-        options=st.session_state.fechas_disponibles,
-        index=len(st.session_state.fechas_disponibles) - 1
+        options=list(st.session_state.diccionario_fechas.keys()),
+        index=len(st.session_state.diccionario_fechas) - 1
     )
+    milisegundos_seleccionados = st.session_state.diccionario_fechas[fecha_seleccionada_texto]
     st.sidebar.write("---")
     ejecutar_analisis = st.sidebar.button("🚀 2. Calcular y Mostrar Mapas", type="primary", use_container_width=True)
 else:
@@ -89,19 +102,21 @@ mapa_placeholder = st.empty()
 M = geemap.Map(center=[-34.9214, -57.9545], zoom=10)
 M.add_basemap("HYBRID")
 
-if ejecutar_analisis and st.session_state.fechas_disponibles:
+if ejecutar_analisis and st.session_state.diccionario_fechas:
     with st.spinner("Procesando evento hídrico e índices estadísticos anuales..."):
         
-        # CORRECCIÓN DEFINITIVA: Extraemos el año directo de los primeros 4 caracteres del string (Inmune a formatos de días)
-        anio_automatico = int(fecha_seleccionada_str.split('-')[0])
+        # Reconstruimos los objetos de fecha de Earth Engine usando la marca de tiempo numérica inmune a errores
+        ee_fecha_base = ee.Date(milisegundos_seleccionados)
         
-        # Reconstruimos las ventanas usando el estándar nativo de Earth Engine sin pasar por datetime externo
+        # Extraemos el año de forma automática y directa en el servidor
+        anio_automatico = ee_fecha_base.get('year').getInfo()
+        
+        # Definimos las ventanas de análisis
         fecha_inicio_anio = f"{anio_automatico}-01-01"
         fecha_fin_anio = f"{anio_automatico}-12-31"
         
-        ee_fecha_base = ee.Date(fecha_seleccionada_str)
-        fecha_inicio_evt = ee_fecha_base.advance(-1, 'day').format('YYYY-MM-DD').getInfo()
-        fecha_fin_evt = ee_fecha_base.advance(1, 'day').format('YYYY-MM-DD').getInfo()
+        fecha_inicio_evt = ee_fecha_base.advance(-1, 'day')
+        fecha_fin_evt = ee_fecha_base.advance(1, 'day')
         
         paises_db = ee.FeatureCollection("USDOS/LSIB_SIMPLE/2017")
         roi_pais = paises_db.filter(ee.Filter.eq('country_na', 'Argentina'))
@@ -141,19 +156,19 @@ if ejecutar_analisis and st.session_state.fechas_disponibles:
         frecuencia_temporal = frecuencia_anual.gte(0.20).And(frecuencia_anual.lte(0.55))
         capa_temporaria_fecha = agua_en_fecha.And(frecuencia_temporal)
 
-        # Centrar el mapa y recortar capas
+        # Centrar el mapa y recortar capas al límite del partido
         M.center_object(roi_final, zoom=10)
         
         recorte_perm_anual = agua_permanente_anual.updateMask(agua_permanente_anual).clip(roi_final)
         recorte_perm_fecha = capa_permanente_fecha.updateMask(capa_permanente_fecha).clip(roi_final)
         recorte_temp_fecha = capa_temporaria_fecha.updateMask(capa_temporaria_fecha).clip(roi_final)
 
-        # Dibujar capas hidrológicas al mapa
+        # Dibujar las 3 capas solicitadas sobre el mapa
         M.addLayer(recorte_perm_anual, {'palette': ['#00008B']}, '1. Cuerpos de Agua Permanentes (Promedio Anual de Fondo >80%)')
         M.addLayer(recorte_perm_fecha, {'palette': ['#0000FF']}, '2. Cuerpos de Agua Permanentes (En la Fecha Seleccionada)')
         M.addLayer(recorte_temp_fecha, {'palette': ['#00BFFF']}, '3. Cuerpos de Agua Temporarios (En la Fecha Seleccionada)')
         
-        st.success(f"📊 ¡Mapas hídricos generados con éxito para el {fecha_seleccionada_str}! Año analizado automáticamente: {anio_automatico}")
+        st.success(f"📊 ¡Mapas hídricos generados con éxito para la escena del {fecha_seleccionada_texto}! Año analizado automáticamente: {anio_automatico}")
 
 # Dibujar el mapa interactivo final en la pantalla derecha
 with mapa_placeholder:
