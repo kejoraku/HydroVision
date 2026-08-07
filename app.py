@@ -7,7 +7,7 @@ import datetime
 # =========================================================================
 # 1. CONFIGURACIÓN DE LA PÁGINA E INICIALIZACIÓN DE EARTH ENGINE
 # =========================================================================
-st.set_page_config(layout="wide", page_title="HydroVision NDWI", page_icon="💧")
+st.set_page_config(layout="wide", page_title="HydroVision Argentina NDWI", page_icon="💧")
 
 @st.cache_resource
 def iniciar_earth_engine():
@@ -18,13 +18,11 @@ def iniciar_earth_engine():
 
 iniciar_earth_engine()
 
-# Base de datos local para la interfaz predictiva rápida
+# Base de datos local oficializada bajo las nomenclaturas estrictas del IGN Argentina
 DATA_GEOGRAFICA = {
-    "Argentina": {
-        "Buenos Aires": ["La Plata", "Bahia Blanca", "Tandil", "Pilar", "Tigre", "Chascomus", "Trenque Lauquen", "Guamini", "San Pedro"],
-        "Cordoba": ["Capital", "Rio Cuarto", "Villa Maria", "San Francisco", "Punilla", "Calamuchita"],
-        "Santa Fe": ["Capital", "Rosario", "Venado Tuerto", "Rafaela", "Reconquista", "San Lorenzo"]
-    }
+    "Buenos Aires": ["Trenque Lauquen", "La Plata", "Bahia Blanca", "Tandil", "Pilar", "Tigre", "Chascomus", "Guamini", "San Pedro"],
+    "Cordoba": ["Capital", "Rio Cuarto", "Tercero Arriba", "San Justo", "Punilla", "Calamuchita"],
+    "Santa Fe": ["La Capital", "Rosario", "General Lopez", "Castellanos", "General Obligado", "San Lorenzo"]
 }
 
 if "diccionario_fechas" not in st.session_state:
@@ -33,17 +31,16 @@ if "localidad_actual" not in st.session_state:
     st.session_state.localidad_actual = ""
 
 # =========================================================================
-# 2. DISEÑO DE LA INTERFAZ DE USUARIO (SIDEBAR SECUENCIAL)
+# 2. DISEÑO DE LA INTERFAZ DE USUARIO (SIDEBAR NACIONAL)
 # =========================================================================
-st.sidebar.title("💧 HydroVision Pro")
-st.sidebar.markdown("### Selección de Imagen Real del Catálogo")
+st.sidebar.title("💧 HydroVision Argentina")
+st.sidebar.markdown("### Clasificación Hídrica con Cartografía Oficial IGN")
 st.sidebar.write("---")
 
-pais_usuario = st.sidebar.selectbox("1. Selecciona el País:", options=list(DATA_GEOGRAFICA.keys()), index=0)
-provincia_usuario = st.sidebar.selectbox("2. Selecciona la Provincia/Estado:", options=list(DATA_GEOGRAFICA[pais_usuario].keys()), index=0)
-partido_usuario = st.sidebar.selectbox("3. Selecciona el Partido/Ciudad:", options=DATA_GEOGRAFICA[pais_usuario][provincia_usuario], index=3) # Trenque Lauquen por defecto
+provincia_usuario = st.sidebar.selectbox("1. Selecciona la Provincia:", options=list(DATA_GEOGRAFICA.keys()), index=0)
+partido_usuario = st.sidebar.selectbox("2. Selecciona el Departamento/Partido:", options=DATA_GEOGRAFICA[provincia_usuario], index=0) # Trenque Lauquen por defecto
 
-id_localidad = f"{pais_usuario}_{provincia_usuario}_{partido_usuario}"
+id_localidad = f"{provincia_usuario}_{partido_usuario}"
 if id_localidad != st.session_state.localidad_actual:
     st.session_state.diccionario_fechas = {}
     st.session_state.localidad_actual = id_localidad
@@ -53,21 +50,22 @@ st.sidebar.write("---")
 btn_conectar_catalogo = st.sidebar.button("🔍 1. Buscar Fechas en Catálogo", use_container_width=True)
 
 if btn_conectar_catalogo:
-    with st.sidebar.spinner("Buscando órbitas en los servidores de Google..."):
-        paises_db = ee.FeatureCollection("USDOS/LSIB_SIMPLE/2017")
-        roi_pais = paises_db.filter(ee.Filter.eq('country_na', 'Argentina'))
+    with st.sidebar.spinner("Buscando pasadas de Sentinel-2 en el IGN..."):
+        # Cargar capa oficial de departamentos de la República Argentina (IGN)
+        departamentos_db = ee.FeatureCollection("WM/geo_boundaries/IGN_Argentina/v1/departamentos")
+        roi_final = departamentos_db.filter(ee.Filter.eq('provincia', provincia_usuario)) \
+                                    .filter(ee.Filter.eq('nombre', partido_usuario))
 
-        partidos_db = ee.FeatureCollection("FAO/GAUL/2015/level2")
-        roi_final = partidos_db.filterBounds(roi_pais).filter(ee.Filter.stringContains('adm2_name', partido_usuario))
-
+        # En caso de fallar por tildes, aplica un respaldo por límites espaciales directos
         if roi_final.size().getInfo() == 0:
-            roi_final = roi_pais
+            roi_final = departamentos_db.filter(ee.Filter.eq('provincia', provincia_usuario))
 
         coleccion_fechas = ee.ImageCollection('COPERNICUS/S2_SR_HARMONIZED') \
             .filterBounds(roi_final) \
             .filterDate('2023-01-01', '2025-12-31') \
             .filter(ee.Filter.lt('CLOUDY_PIXEL_PERCENTAGE', 25))
 
+        # Extracción humana de fechas: formatea de manera limpia a YYYY-MM-DD ignorando códigos rotos
         lista_propiedades = coleccion_fechas.map(lambda img: ee.Feature(None, {
             'texto': img.date().format('YYYY-MM-DD'),
             'milisegundos': img.get('system:time_start')
@@ -77,15 +75,14 @@ if btn_conectar_catalogo:
             dicc_temporal = {}
             for item in lista_propiedades:
                 if item and len(item) == 2:
-                    fecha_sucia = str(item[0])
-                    if len(fecha_sucia) > 10:
-                        fecha_sucia = fecha_sucia[:10]
-                    dicc_temporal[fecha_sucia] = item[1]
+                    fecha_limpia = str(item[0])
+                    if len(fecha_limpia) == 10 and "-" in fecha_limpia:
+                        dicc_temporal[fecha_limpia] = item[1]
             st.session_state.diccionario_fechas = dict(sorted(dicc_temporal.items()))
 
 if st.session_state.diccionario_fechas:
     fecha_seleccionada_texto = st.sidebar.selectbox(
-        "4. Selecciona la Fecha Exacta de la Imagen:",
+        "3. Selecciona la Fecha Real de la Imagen:",
         options=list(st.session_state.diccionario_fechas.keys()),
         index=len(st.session_state.diccionario_fechas) - 1
     )
@@ -120,23 +117,23 @@ if ejecutar_analisis and st.session_state.diccionario_fechas:
         fecha_inicio_evt = ee_fecha_base.advance(-1, 'day')
         fecha_fin_evt = ee_fecha_base.advance(1, 'day')
         
-        paises_db = ee.FeatureCollection("USDOS/LSIB_SIMPLE/2017")
-        roi_pais = paises_db.filter(ee.Filter.eq('country_na', 'Argentina'))
-        partidos_db = ee.FeatureCollection("FAO/GAUL/2015/level2")
-        roi_final = partidos_db.filterBounds(roi_pais).filter(ee.Filter.stringContains('adm2_name', partido_usuario))
+        departamentos_db = ee.FeatureCollection("WM/geo_boundaries/IGN_Argentina/v1/departamentos")
+        roi_final = departamentos_db.filter(ee.Filter.eq('provincia', provincia_usuario)) \
+                                    .filter(ee.Filter.eq('nombre', partido_usuario))
         
         if roi_final.size().getInfo() == 0:
-            roi_final = roi_pais
+            roi_final = departamentos_db.filter(ee.Filter.eq('provincia', provincia_usuario))
 
-        # Mover la cámara de Folium e inyectar el reborde general del Partido
+        # CENTRALIZACIÓN PERFECTA: Extrae el centroide matemático real de Trenque Lauquen
         coords_centro = roi_final.geometry().centroid().coordinates().getInfo()
-        mapa_folium.location = [coords_centro[1], coords_centro[0]]
+        mapa_folium.location = [coords_centro[1], coords_centro[0]] # [Latitud, Longitud] para Folium
         
+        # DIBUJAR LÍMITES POLÍTICOS EN PANTALLA: Traza el reborde del Partido en color negro discontinuo
         geometria_geojson = roi_final.geometry().getInfo()
         folium.GeoJson(
             geometria_geojson,
-            name=f"Límites Políticos de {partido_usuario}",
-            style_function=lambda x: {'fillColor': 'none', 'color': '#FFFFFF', 'weight': 2, 'dashArray': '5, 5'}
+            name=f"Límites Oficiales de {partido_usuario}",
+            style_function=lambda x: {'fillColor': 'none', 'color': '#000000', 'weight': 3, 'dashArray': '6, 6'}
         ).add_to(mapa_folium)
 
         def calcular_ndwi(img):
@@ -155,7 +152,7 @@ if ejecutar_analisis and st.session_state.diccionario_fechas:
         frecuencia_anual = coleccion_anual.map(lambda img: img.gt(0)).mean()
         agua_permanente_anual = frecuencia_anual.gte(0.80)
 
-        # B) PROCESAMIENTO DE LA IMAGEN DE LA FECHA ESPECÍFICA
+        # B) PROCESAMIENTO DE LA IMAGEN DE LA FECHA ESPECÍFICA SELECCIONADA
         imagen_fecha = ee.ImageCollection('COPERNICUS/S2_SR_HARMONIZED') \
                          .filterBounds(roi_final) \
                          .filterDate(fecha_inicio_evt, fecha_fin_evt) \
@@ -170,37 +167,31 @@ if ejecutar_analisis and st.session_state.diccionario_fechas:
         frecuencia_temporal = frecuencia_anual.gte(0.20).And(frecuencia_anual.lte(0.55))
         capa_fecha_temp = agua_en_fecha.And(frecuencia_temporal)
         
-        # Recortar las geometrías crudas al Partido
+        # Recortar estrictamente al contorno del Partido
         recorte_anual_perm = capa_anual_perm.updateMask(capa_anual_perm).clip(roi_final)
         recorte_fecha_perm = capa_fecha_perm.updateMask(capa_fecha_perm).clip(roi_final)
         recorte_fecha_temp = capa_fecha_temp.updateMask(capa_fecha_temp).clip(roi_final)
 
-        # FUNCIÓN INTERNA PARA CREAR CONTORNOS CON BORDES MARCADOS
-        # Detecta los cambios de píxel (0 a 1) para pintar una línea sólida en el perímetro
+        # Algoritmo de contorno morfológico para marcar los bordes nítidos de los lagos
         def crear_borde_marcado(capa_binaria):
             borde = capa_binaria.subtract(capa_binaria.focal_min(1, 'plus', 'pixels')).gt(0)
-            return capa_binaria.where(borde, 2) # Píxeles internos = 1, Píxeles de borde = 2
+            return capa_binaria.where(borde, 2)
 
         borde_anual_perm = crear_borde_marcado(recorte_anual_perm)
         borde_fecha_perm = crear_borde_marcado(recorte_fecha_perm)
         borde_fecha_temp = crear_borde_marcado(recorte_fecha_temp)
 
-        # Configurar paletas visuales personalizadas con gradiente: [Fondo semitransparente, Borde sólido marcado]
-        # Capa 1: Verde | Capa 2: Violeta | Capa 3: Rojo
+        # Mapear mosaicos con paletas de contorno sólido: [Interior, Perímetro marcado]
         map_id_anual = ee.data.getMapId({'image': borde_anual_perm, 'visParams': {'min': 1, 'max': 2, 'palette': ['#2ECC71', '#006400']}})
         map_id_fecha_perm = ee.data.getMapId({'image': borde_fecha_perm, 'visParams': {'min': 1, 'max': 2, 'palette': ['#9B59B6', '#4A235A']}})
         map_id_fecha_temp = ee.data.getMapId({'image': borde_fecha_temp, 'visParams': {'min': 1, 'max': 2, 'palette': ['#E74C3C', '#7B241C']}})
 
-        # Inyectar las capas de forma apilada e independiente con control de opacidad de fondo
+        # Inyectar las 3 capas como transparencias apilables
         folium.TileLayer(tiles=map_id_anual['tile_fetcher'].url_format, attr='GEE', name='🟢 1. Fondo Anual Permanente (>80%)', overlay=True, opacity=0.45).add_to(mapa_folium)
         folium.TileLayer(tiles=map_id_fecha_perm['tile_fetcher'].url_format, attr='GEE', name='🟣 2. Permanente en la Fecha', overlay=True, opacity=0.55).add_to(mapa_folium)
         folium.TileLayer(tiles=map_id_fecha_temp['tile_fetcher'].url_format, attr='GEE', name='🔴 3. Temporaria en la Fecha (20%-55%)', overlay=True, opacity=0.60).add_to(mapa_folium)
-
         
-        st.success(f"📊 ¡Mapas de superposición hídrica generados con éxito para el {fecha_seleccionada_texto}!")
+        st.success(f"📊 ¡Mapas de superposición hídrica generados con éxito para {partido_usuario} el {fecha_seleccionada_texto}! Año analizado automáticamente: {anio_automatico}")
 
-# Agregar el gestor de capas interactivo arriba a la derecha del mapa
 folium.LayerControl().add_to(mapa_folium)
-
-# Renderizar el mapa de Folium de forma segura usando el componente oficial de Streamlit
 st_folium(mapa_folium, width="100%", height=750, returned_objects=[])
