@@ -13,12 +13,13 @@ st.set_page_config(layout="wide", page_title="HydroVision Argentina NDWI", page_
 @st.cache_resource
 def iniciar_earth_engine():
     try:
-        ee.Initialize(project='ee-raanidg') 
+        # Lee la cuenta robot encriptada desde los secretos guardados en internet
+        credenciales = ee.ServiceAccountCredentials(
+            st.secrets["gcp"]["service_account"]
+        )
+        ee.Initialize(credentials=credenciales, project='ee-raanidg')
     except Exception as e:
-        try:
-            ee.Initialize(project='ee-raanidg')
-        except Exception as e2:
-            st.error(f"Error crítico al inicializar Earth Engine: {e2}")
+        st.error(f"Error crítico al inicializar Earth Engine en la nube: {e}")
 
 iniciar_earth_engine()
 
