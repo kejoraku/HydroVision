@@ -14,12 +14,16 @@ st.set_page_config(layout="wide", page_title="HydroVision Argentina NDWI", page_
 @st.cache_resource
 def iniciar_earth_engine():
     try:
-        # Cargamos el string TOML y lo convertimos a un diccionario JSON real para Google
+        # 1. Transformamos la cadena de texto de Streamlit Secrets en un diccionario JSON real
         info_llave = json.loads(st.secrets["gcp"]["service_account"])
+        
+        # 2. Inicializamos las credenciales oficiales usando el correo de la cuenta robot
         credenciales = ee.ServiceAccountCredentials(
             info_llave["client_email"],
             key_data=st.secrets["gcp"]["service_account"]
         )
+        
+        # 3. Conectamos el motor con el proyecto ee-raanidg de forma segura
         ee.Initialize(credentials=credenciales, project='ee-raanidg')
     except Exception as e:
         st.error(f"Error crítico al inicializar Earth Engine en la nube: {e}")
