@@ -1,3 +1,4 @@
+import json # Asegurate de que esta importación esté arriba de todo en tu archivo si no estaba
 import streamlit as st
 import ee
 import folium
@@ -13,9 +14,11 @@ st.set_page_config(layout="wide", page_title="HydroVision Argentina NDWI", page_
 @st.cache_resource
 def iniciar_earth_engine():
     try:
-        # Lee la cuenta robot encriptada desde los secretos guardados en internet
+        # Cargamos el string TOML y lo convertimos a un diccionario JSON real para Google
+        info_llave = json.loads(st.secrets["gcp"]["service_account"])
         credenciales = ee.ServiceAccountCredentials(
-            st.secrets["gcp"]["service_account"]
+            info_llave["client_email"],
+            key_data=st.secrets["gcp"]["service_account"]
         )
         ee.Initialize(credentials=credenciales, project='ee-raanidg')
     except Exception as e:
